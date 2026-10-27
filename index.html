@@ -1,0 +1,246 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>Heilbronn 3D</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <link href="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.css" rel="stylesheet" />
+  <script src="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.js"></script>
+  <script type="importmap">
+    { "imports": { "three": "https://unpkg.com/three@0.160.0/build/three.module.js" } }
+  </script>
+  <style>
+    html, body, #map { margin: 0; height: 100%; }
+    #ui {
+      position: absolute; top: 10px; left: 10px; z-index: 1;
+      display: flex; gap: 6px; flex-wrap: wrap; max-width: 420px;
+    }
+    #ui button {
+      padding: 8px 12px; border: 0; border-radius: 6px; background: #fff;
+      cursor: pointer; font: 14px sans-serif; box-shadow: 0 1px 4px rgba(0,0,0,.3);
+    }
+    #ui button.active { background: #2e7d32; color: #fff; }
+    #count {
+      position: absolute; bottom: 24px; left: 10px; z-index: 1; background: #fff;
+      padding: 6px 10px; border-radius: 6px; font: 13px sans-serif;
+    }
+  </style>
+</head>
+<body>
+<div id="map"></div>
+<div id="ui">
+  <button id="btnTree" class="active">🌳 Place tree</button>
+  <button id="btnBuilding">🏢 Place building</button>
+  <button id="btnUndo">↩ Undo</button>
+  <button id="btnOsm">Load real trees</button>
+  <button id="btnNav">✋ Navigate only</button>
+</div>
+<div id="count"></div>
+
+<script type="module">
+import * as THREE from 'three';
+
+const ORIGIN = [9.2109, 49.1427];
+let mode = 'tree';
+
+const map = new maplibregl.Map({
+  container: 'map',
+  style: 'https://tiles.openfreemap.org/styles/liberty',
+  center: ORIGIN,
+  zoom: 17,
+  pitch: 65,
+  bearing: -20,
+  maxPitch: 85
+});
+map.addControl(new maplibregl.NavigationControl({ visualizePitch: true }));
+
+// ---------- three.js scene ----------
+const originMerc = maplibregl.MercatorCoordinate.fromLngLat(ORIGIN, 0);
+const unit = originMerc.meterInMercatorCoordinateUnits();
+
+const scene = new THREE.Scene();
+const camera = new THREE.Camera();
+scene.add(new THREE.AmbientLight(0xffffff, 0.8));
+const sun = new THREE.DirectionalLight(0xffffff, 1.2);
+sun.position.set(-100, 200, -100);
+scene.add(sun);
+
+// scene coords: x = east (m), y = up (m), z = south (m)
+function toScene(lng, lat, up) {
+  const m = maplibregl.MercatorCoordinate.fromLngLat([lng, lat], 0);
+  return new THREE.Vector3((m.x - originMerc.x) / unit, up, (m.y - originMerc.y) / unit);
+}
+function groundAt(lng, lat) {
+  const e = map.queryTerrainElevation([lng, lat]);
+  return e == null ? 0 : e;
+}
+
+// ---------- tree ----------
+const trunkGeo = new THREE.CylinderGeometry(0.25, 0.4, 4, 6);
+const crownGeo = new THREE.IcosahedronGeometry(3, 1);
+const trunkMat = new THREE.MeshLambertMaterial({ color: 0x6b4a2b });
+const crownMats = [0x2e7d32, 0x388e3c, 0x1b5e20, 0x558b2f].map(
+  c => new THREE.MeshLambertMaterial({ color: c, flatShading: true })
+);
+const placed = []; // {obj, type}
+
+function makeTree(lng, lat) {
+  const g = new THREE.Group();
+  const s = 0.8 + Math.random() * 0.8;
+  const trunk = new THREE.Mesh(trunkGeo, trunkMat);
+  trunk.position.y = 2;
+  const crown = new THREE.Mesh(crownGeo, crownMats[Math.floor(Math.random() * crownMats.length)]);
+  crown.position.y = 6;
+  crown.scale.set(1, 1.2, 1);
+  g.add(trunk, crown);
+  g.scale.setScalar(s);
+  g.position.copy(toScene(lng, lat, groundAt(lng, lat)));
+  return g;
+}
+
+// ---------- building with procedural windows ----------
+function windowTexture() {
+  const c = document.createElement('canvas');
+  c.width = c.height = 64;
+  const x = c.getContext('2d');
+  x.fillStyle = '#d8d2c6'; x.fillRect(0, 0, 64, 64);   // wall
+  x.fillStyle = '#5b7a99'; x.fillRect(14, 12, 36, 34); // glass
+  x.fillStyle = '#eee';    x.fillRect(14, 12, 36, 3);  // frame top
+  x.fillRect(30, 12, 4, 34);                           // frame middle
+  x.fillStyle = '#b9b2a4'; x.fillRect(10, 46, 44, 4);  // sill
+  const t = new THREE.CanvasTexture(c);
+  t.wrapS = t.wrapT = THREE.RepeatWrapping;
+  t.colorSpace = THREE.SRGBColorSpace;
+  return t;
+}
+const baseWinTex = windowTexture();
+
+function makeBuilding(lng, lat, w = 14, d = 10, floors = 5) {
+  const h = floors * 3.2;
+  const side = (repeatX) => {
+    const t = baseWinTex.clone();
+    t.needsUpdate = true;
+    t.repeat.set(Math.max(1, Math.round(repeatX / 3.5)), floors);
+    return new THREE.MeshLambertMaterial({ map: t });
+  };
+  const roof = new THREE.MeshLambertMaterial({ color: 0x8a4b3b });
+  // order: +x, -x, +y, -y, +z, -z
+  const mats = [side(d), side(d), roof, roof, side(w), side(w)];
+  const mesh = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), mats);
+  const p = toScene(lng, lat, groundAt(lng, lat));
+  mesh.position.set(p.x, p.y + h / 2, p.z);
+  return mesh;
+}
+
+// ---------- custom layer ----------
+const customLayer = {
+  id: 'three-layer',
+  type: 'custom',
+  renderingMode: '3d',
+  onAdd(map, gl) {
+    this.renderer = new THREE.WebGLRenderer({ canvas: map.getCanvas(), context: gl, antialias: true });
+    this.renderer.autoClear = false;
+  },
+  render(gl, matrix) {
+    const rotX = new THREE.Matrix4().makeRotationAxis(new THREE.Vector3(1, 0, 0), Math.PI / 2);
+    const m = new THREE.Matrix4().fromArray(matrix);
+    const l = new THREE.Matrix4()
+      .makeTranslation(originMerc.x, originMerc.y, originMerc.z)
+      .scale(new THREE.Vector3(unit, -unit, unit))
+      .multiply(rotX);
+    camera.projectionMatrix = m.multiply(l);
+    this.renderer.resetState();
+    this.renderer.render(scene, camera);
+    map.triggerRepaint();
+  }
+};
+
+// ---------- map setup ----------
+map.on('load', () => {
+  map.addSource('terrain', {
+    type: 'raster-dem',
+    tiles: ['https://s3.amazonaws.com/elevation-tiles-prod/terrarium/{z}/{x}/{y}.png'],
+    encoding: 'terrarium', tileSize: 256, maxzoom: 14
+  });
+  map.setTerrain({ source: 'terrain', exaggeration: 1 }); // keep 1 so heights match
+
+  map.addSource('satellite', {
+    type: 'raster',
+    tiles: ['https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}'],
+    tileSize: 256, maxzoom: 19,
+    attribution: 'Imagery © Esri, Maxar, Earthstar Geographics'
+  });
+  map.addLayer({ id: 'satellite', type: 'raster', source: 'satellite' });
+
+  if (map.getLayer('building-3d')) map.removeLayer('building-3d');
+  map.addLayer({
+    id: 'buildings-3d', type: 'fill-extrusion', source: 'openmaptiles',
+    'source-layer': 'building', minzoom: 14,
+    paint: {
+      'fill-extrusion-color': '#e8e4dc',
+      'fill-extrusion-height': ['coalesce', ['get', 'render_height'], 8],
+      'fill-extrusion-base': ['coalesce', ['get', 'render_min_height'], 0],
+      'fill-extrusion-opacity': 0.9
+    }
+  });
+
+  map.addLayer(customLayer);
+});
+
+// ---------- interaction ----------
+function updateCount() {
+  const t = placed.filter(p => p.type === 'tree').length;
+  const b = placed.filter(p => p.type === 'building').length;
+  document.getElementById('count').textContent = `Trees: ${t} | Buildings: ${b}`;
+}
+
+map.on('click', (e) => {
+  if (mode === 'nav') return;
+  const { lng, lat } = e.lngLat;
+  const obj = mode === 'tree' ? makeTree(lng, lat) : makeBuilding(lng, lat);
+  scene.add(obj);
+  placed.push({ obj, type: mode });
+  updateCount();
+});
+
+function setMode(m, btnId) {
+  mode = m;
+  document.querySelectorAll('#ui button').forEach(b => b.classList.remove('active'));
+  document.getElementById(btnId).classList.add('active');
+}
+btnTree.onclick = () => setMode('tree', 'btnTree');
+btnBuilding.onclick = () => setMode('building', 'btnBuilding');
+btnNav.onclick = () => setMode('nav', 'btnNav');
+btnUndo.onclick = () => {
+  const last = placed.pop();
+  if (last) scene.remove(last.obj);
+  updateCount();
+};
+
+// Real trees from OpenStreetMap (free Overpass API), capped to keep it smooth
+btnOsm.onclick = async () => {
+  btnOsm.textContent = 'Loading...';
+  const c = map.getCenter();
+  const d = 0.004; // ~400 m box around the current view center
+  const q = `[out:json];node["natural"="tree"](${c.lat - d},${c.lng - d},${c.lat + d},${c.lng + d});out 1500;`;
+  try {
+    const res = await fetch('https://overpass-api.de/api/interpreter', {
+      method: 'POST', body: 'data=' + encodeURIComponent(q)
+    });
+    const data = await res.json();
+    data.elements.forEach(n => {
+      const obj = makeTree(n.lon, n.lat);
+      scene.add(obj);
+      placed.push({ obj, type: 'tree' });
+    });
+    updateCount();
+    btnOsm.textContent = `Loaded ${data.elements.length} trees`;
+  } catch (err) {
+    console.error(err);
+    btnOsm.textContent = 'Failed, try again';
+  }
+};
+updateCount();
+</script>
+</body>
+</html>
