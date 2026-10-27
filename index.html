@@ -34,11 +34,15 @@
   <button id="btnUndo">↩ Undo</button>
   <button id="btnOsm">Load real trees</button>
   <button id="btnNav">✋ Navigate only</button>
+  <button id="btnInspect">ℹ Inspect tree</button>
 </div>
 <div id="count"></div>
 
 <script type="module">
 import * as THREE from 'three';
+
+import { addCadastre } from './cadastre.js';
+let cadastre = null;
 
 const ORIGIN = [9.2109, 49.1427];
 let mode = 'tree';
@@ -172,6 +176,11 @@ map.on('load', () => {
   });
   map.addLayer({ id: 'satellite', type: 'raster', source: 'satellite' });
 
+  addCadastre({ THREE, map, scene, toScene }).then(c => {
+  cadastre = c;
+  document.getElementById('count').textContent += ` | Cadastre: ${c.count}`;
+  });
+
   if (map.getLayer('building-3d')) map.removeLayer('building-3d');
   map.addLayer({
     id: 'buildings-3d', type: 'fill-extrusion', source: 'openmaptiles',
@@ -196,6 +205,12 @@ function updateCount() {
 
 map.on('click', (e) => {
   if (mode === 'nav') return;
+  if (mode === 'inspect') {
+  const hit = cadastre && cadastre.inspect(e.lngLat);
+  if (hit) new maplibregl.Popup().setLngLat(hit.lngLat).setHTML(hit.html).addTo(map);
+  return;
+  }
+
   const { lng, lat } = e.lngLat;
   const obj = mode === 'tree' ? makeTree(lng, lat) : makeBuilding(lng, lat);
   scene.add(obj);
@@ -216,6 +231,7 @@ btnUndo.onclick = () => {
   if (last) scene.remove(last.obj);
   updateCount();
 };
+btnInspect.onclick = () => setMode('inspect', 'btnInspect');
 
 // Real trees from OpenStreetMap (free Overpass API), capped to keep it smooth
 btnOsm.onclick = async () => {
