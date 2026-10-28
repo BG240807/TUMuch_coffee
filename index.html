@@ -50,6 +50,7 @@
 <script type="module" src="about-card.js"></script>
 <script type="module" src="time-slider.js"></script>
 <script type="module" src="intro.js"></script>
+<script type="module" src="climate-layer.js"></script>
 
 <script type="module">
 import * as THREE from 'three';
@@ -378,6 +379,7 @@ function restoreLastDeleted() {
 // ---------- session persistence (sessionStorage: survives reloads, cleared when the tab closes) ----------
 const STORE_KEY = 'heilbronn3d-session';
 function saveSession() {
+    window.dispatchEvent(new Event('scene-changed'));
   try {
     sessionStorage.setItem(STORE_KEY, JSON.stringify({
       placed: placed.map(p => ({ type: p.type, lng: p.lng, lat: p.lat, s: p.obj.userData.s, ci: p.obj.userData.ci })),
@@ -467,6 +469,9 @@ map.on('load', () => {
   map.on('idle', refreshPlacedHeights);   // keep placed objects on the terrain
   map.on('idle', collectBuildings);        // pick up building polygons from newly loaded tiles
   collectBuildings();
+  window.__app.ready = true;
+  window.dispatchEvent(new Event('app-ready'));
+
 });
 
 // ---------- interaction ----------
@@ -546,6 +551,7 @@ btnOsm.onclick = async () => {
     btnOsm.textContent = 'Failed, try again';
   }
 };
+window.__app = { map, placed, deleted, buildings, isDeleted, ready: false };
 updateCount();
 </script>
 </body>
