@@ -74,9 +74,11 @@ function toScene(lng, lat, up) {
   const m = maplibregl.MercatorCoordinate.fromLngLat([lng, lat], 0);
   return new THREE.Vector3((m.x - originMerc.x) / unit, up, (m.y - originMerc.y) / unit);
 }
+// Ground height in metres above sea level. queryTerrainElevation() is relative to the
+// point in the middle of the screen, so add that point's height (map.transform.elevation).
 function groundAt(lng, lat) {
   const e = map.queryTerrainElevation([lng, lat]);
-  return e == null ? 0 : e;
+  return (e == null ? 0 : e) + (map.transform.elevation || 0);
 }
 
 // ---------- tree ----------
@@ -153,6 +155,8 @@ const customLayer = {
       .scale(new THREE.Vector3(unit, -unit, unit))
       .multiply(rotX);
     camera.projectionMatrix = m.multiply(l);
+    // Objects store absolute heights; the map's 3D space is relative to the screen centre's height.
+    scene.position.y = -(map.transform.elevation || 0);
     if (cadastre) cadastre.update(camera);
     this.renderer.resetState();
     this.renderer.render(scene, camera);

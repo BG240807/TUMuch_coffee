@@ -32,7 +32,7 @@ export async function addCadastre({
     const trunkR = typ === 3 ? 0.2 : clamp(circ / (2 * Math.PI), 0.1, 0.8);
     const p = toScene(lng, lat, 0);
     const rad = Math.max(crown / 2, H / 2) + 1; // bounding-sphere radius for culling
-    return { idx, x: p.x, z: p.z, lng, lat, typ, crown, H, trunkH, trunkR, rad, elev: 0 };
+    return { idx, x: p.x, z: p.z, lng, lat, typ, crown, H, trunkH, trunkR, rad, elev: map.transform.elevation || 0 };
   });
 
   const nConifer = T.filter(t => t.typ === 1).length;
@@ -125,6 +125,7 @@ export async function addCadastre({
 
     frustum.setFromProjectionMatrix(camera.projectionMatrix);
     const planes = frustum.planes;
+    const sceneY = -(map.transform.elevation || 0); // same shift as scene.position.y in index.html
 
     let cp;
     try { cp = map.getFreeCameraOptions().position.toLngLat(); } catch { cp = map.getCenter(); }
@@ -142,7 +143,7 @@ export async function addCadastre({
       const dx = t.x - cam.x, dz = t.z - cam.z;
       if (dx * dx + dz * dz > maxD2) continue;
       passDist++;
-      const y = t.elev + t.H / 2;
+      const y = t.elev + sceneY + t.H / 2;
       let inside = true;
       for (let p = 0; p < 6; p++) {
         const pl = planes[p];
@@ -183,8 +184,10 @@ export async function addCadastre({
     for (const t of T) {
       if (t.lng < b.getWest() - padLng || t.lng > b.getEast() + padLng ||
           t.lat < b.getSouth() - padLat || t.lat > b.getNorth() + padLat) continue;
-      const e = map.queryTerrainElevation([t.lng, t.lat]);
-      if (e == null || Math.abs(e - t.elev) < 0.25) continue;
+      const rel = map.queryTerrainElevation([t.lng, t.lat]);
+      if (rel == null) continue;
+      const e = rel + (map.transform.elevation || 0); // absolute height (rel is relative to the screen centre)
+      if (Math.abs(e - t.elev) < 0.25) continue;
       t.elev = e;
       place(t);
       dirty = true;
