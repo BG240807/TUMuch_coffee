@@ -1,6 +1,7 @@
 // Floating metrics card: live city values for Heilbronn from Open-Meteo (no API key).
 // Compact: temperature, felt temperature, air quality (European AQI), humidity. Click to expand.
 // Self-contained: only adds its own element, does not touch map clicks or tools.
+// The time slider calls showMonth() / showLive() to switch between a picked month and now.
 const LAT = 49.142, LON = 9.219;
 const REFRESH_MS = 10 * 60 * 1000;
 
@@ -48,12 +49,47 @@ function render({ w, a }) {
     </div>`;
 }
 
+// Monthly view for the time slider: m = { label, kind: 'measured' | 'projected', temp, tmax, hotDays, humidity, rain, aqi, pm2_5, pm10 }
+let monthShown = false;
+export function showMonth(m) {
+  monthShown = true;
+  const band = m.aqi == null ? null : aqiBand(m.aqi);
+  const badge = m.kind === 'projected' ? '<span class="mc-badge proj">projected</span>' : '<span class="mc-badge meas">measured</span>';
+  const air = m.kind === 'projected' ? '<span class="mc-muted">no projection</span>'
+    : band ? `<span class="mc-dot" style="background:${band[2]}"></span>${band[1]} (${fmt(m.aqi)})` : '–';
+  card.innerHTML = `
+    <div class="mc-head"><span>Heilbronn · ${m.label}</span>${badge}</div>
+    <div class="mc-temp">${fmt(m.temp, 1)}°<small>avg · max ${fmt(m.tmax, 0)}°</small></div>
+    <div class="mc-row"><span>Air quality</span><b>${air}</b></div>
+    <div class="mc-row"><span>Humidity</span><b>${fmt(m.humidity)} %</b></div>
+    <div class="mc-more">
+      <div class="mc-row"><span>Hot days (≥ 30°)</span><b>${fmt(m.hotDays)}</b></div>
+      <div class="mc-row"><span>Rain (month)</span><b>${fmt(m.rain, 0)} mm</b></div>
+      ${m.kind === 'projected' ? '' : `
+      <div class="mc-row"><span>PM2.5</span><b>${fmt(m.pm2_5, 1)} µg/m³</b></div>
+      <div class="mc-row"><span>PM10</span><b>${fmt(m.pm10, 1)} µg/m³</b></div>`}
+      <div class="mc-note">${m.kind === 'projected'
+        ? `Average of ${m.models ?? 7} climate models (CMIP6 HighResMIP via Open-Meteo), this month in ${m.years ? m.years.join('–') : '±5 years'}. A projection, not a forecast; no air-quality projection.`
+        : 'Monthly average of measured history (ERA5 reanalysis and CAMS air quality via Open-Meteo).'}</div>
+    </div>`;
+}
+export function showMonthLoading(label) {
+  monthShown = true;
+  card.querySelector('.mc-head span').textContent = `Heilbronn · ${label}`;
+  card.querySelector('.mc-temp').textContent = '…';
+}
+export function showLive() {
+  monthShown = false;
+  refresh();
+}
+
 async function refresh() {
   try {
-    render(await load());
+    const data = await load();
+    if (!monthShown) render(data);
   } catch (err) {
     console.error('metrics card: Open-Meteo failed', err);
-    card.querySelector('.mc-temp').textContent = 'offline';
+    if (!monthShown) card.querySelector('.mc-temp').textContent = 'offline';
   }
 }
 refresh();

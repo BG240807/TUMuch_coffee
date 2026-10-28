@@ -20,4 +20,8 @@
 #metrics-card .mc-note { color: #8a969c; font-size: 11px; margin-top: 6px; }
 #metrics-card .mc-chev { transition: transform 0.15s; }
 #metrics-card.open .mc-chev { transform: rotate(180deg); }
+#metrics-card .mc-badge { font-size: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.4px; padding: 1px 6px; border-radius: 8px; }
+#metrics-card .mc-badge.meas { background: #e3eef6; color: #2b5d80; }
+#metrics-card .mc-badge.proj { background: #fbe7d6; color: #a2531b; }
+#metrics-card .mc-muted { color: #8a969c; font-weight: 500; }
 @media (max-width: 600px) { #metrics-card { right: 10px; top: auto; bottom: 60px; width: auto; left: 10px; } }

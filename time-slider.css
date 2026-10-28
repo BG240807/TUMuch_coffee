@@ -1,0 +1,23 @@
+/* Time slider pill (bottom centre): monthly steps from 2020 to 2050, measured | projected split at today. */
+#time-slider {
+  position: absolute; left: 50%; bottom: 64px; /* clears the counter and map credits */ transform: translateX(-50%); z-index: 2;
+  width: min(520px, calc(100vw - 760px)); min-width: 340px; padding: 8px 18px 6px; box-sizing: border-box;
+  background: rgba(255, 255, 255, 0.86); backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px);
+  border-radius: 22px; box-shadow: 0 4px 18px rgba(0, 0, 0, 0.15);
+  font: 12px/1.3 system-ui, -apple-system, sans-serif; color: #1f2a30; user-select: none;
+}
+#time-slider .ts-top { display: flex; justify-content: space-between; align-items: center; margin-bottom: 2px; }
+#time-slider .ts-label { font-size: 15px; font-weight: 650; }
+#time-slider .ts-now {
+  border: 0; background: #1f2a30; color: #fff; border-radius: 10px; padding: 2px 9px;
+  font: 600 11px system-ui, -apple-system, sans-serif; cursor: pointer;
+}
+#time-slider .ts-now:disabled { background: #d5dbde; color: #6b777d; cursor: default; }
+#time-slider .ts-track { position: relative; }
+#time-slider input[type=range] { width: 100%; margin: 4px 0 0; accent-color: #1f2a30; cursor: pointer; }
+#time-slider .ts-today { position: absolute; top: -2px; bottom: 0; width: 2px; background: #e07a2a; pointer-events: none; }
+#time-slider .ts-split { position: relative; height: 14px; color: #6b777d; font-size: 10px; text-transform: uppercase; letter-spacing: 0.4px; }
+#time-slider .ts-split span { position: absolute; white-space: nowrap; }
+#time-slider .ts-split .meas { transform: translateX(calc(-100% - 6px)); color: #2b5d80; }
+#time-slider .ts-split .proj { transform: translateX(6px); color: #a2531b; }
+#time-slider .ts-years { display: flex; justify-content: space-between; color: #8a969c; font-size: 10px; }
