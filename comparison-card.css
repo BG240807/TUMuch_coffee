@@ -1,0 +1,26 @@
+/* Floating comparison card, below the editing toolbar. */
+#comparison-card {
+  position: absolute; left: 10px; z-index: 2;
+  width: 300px; max-width: calc(100vw - 20px); padding: 12px 14px; box-sizing: border-box;
+  background: rgba(255, 255, 255, 0.86); backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px);
+  border-radius: 16px; box-shadow: 0 4px 18px rgba(0, 0, 0, 0.15);
+  font: 12px/1.35 system-ui, -apple-system, sans-serif; color: #1f2a30;
+}
+#comparison-card h3 { margin: 0 0 8px; font-size: 13px; font-weight: 600; }
+#comparison-card .cc-toggle { display: flex; gap: 6px; margin-bottom: 8px; }
+#comparison-card button {
+  flex: 1; padding: 7px 10px; border: 1px solid rgba(0, 0, 0, 0.15); border-radius: 6px;
+  background: #fff; color: #1f2a30; font: inherit; cursor: pointer;
+}
+#comparison-card button[aria-pressed="true"] { background: #2e7d32; border-color: #2e7d32; color: #fff; }
+#comparison-card button:disabled { opacity: 0.5; cursor: default; }
+#comparison-card button:focus-visible { outline: 2px solid #1f2a30; outline-offset: 2px; }
+#comparison-card table { width: 100%; border-collapse: collapse; font-variant-numeric: tabular-nums; }
+#comparison-card caption { text-align: left; color: #5d6b72; margin-bottom: 5px; }
+#comparison-card th, #comparison-card td { padding: 4px 0; text-align: right; font-weight: 400; }
+#comparison-card th:first-child { text-align: left; }
+#comparison-card thead th { color: #5d6b72; font-size: 11px; }
+#comparison-card td:last-child { font-weight: 600; }
+#comparison-card p { margin: 8px 0 0; color: #5d6b72; font-size: 11px; }
+#comparison-card .cc-status { border-top: 1px solid rgba(0, 0, 0, 0.08); padding-top: 7px; }
+#ui button:disabled { opacity: 0.5; cursor: default; }
