@@ -832,13 +832,6 @@ function init() {
     if (b !== brushBtn && brush) stopBrush();
   });
 
-  // our two buttons make the toolbar taller: keep the climate layer's panel (fixed at top:150px) below it
-  const ui = document.getElementById('ui');
-  new ResizeObserver(() => {
-    const cl = document.getElementById('cl-panel');
-    if (cl) cl.style.top = `${ui.offsetTop + ui.offsetHeight + 10}px`;
-  }).observe(ui);
-
   map.addSource('green-areas', { type: 'geojson', data: EMPTY });
   const colour = ['match', ['get', 'state'], 'bad', '#c62828', 'pending', '#f9a825', '#2e7d32'];
   map.addLayer({ id: 'green-areas-fill', type: 'fill', source: 'green-areas', filter: ['==', ['geometry-type'], 'Polygon'],

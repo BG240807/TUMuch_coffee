@@ -312,6 +312,9 @@ function updateEdits() {
     }
   }
   const head = `<div><b>Your edits</b><span>+${U.nTrees} trees, +${U.nBuild} bldg, −${U.nRemoved} bldg</span></div>`;
+  window.dispatchEvent(new CustomEvent('climate-edits', {
+    detail: { active: !showOriginal && n > 0, dT: n ? dT / n : 0, peakT: pT, dPM: n ? (dPM / n) * 100 : 0, dRH: n ? dRH / n : 0, areaM2: Math.round(n * CELL * CELL), nTrees: U.nTrees, nBuild: U.nBuild, nRemoved: U.nRemoved, showOriginal }
+  }));
   if (showOriginal) { el.innerHTML = head + '<div style="color:#8a969c">Viewing the original city: edits hidden.</div>'; return; }
   if (!n) { el.innerHTML = head + '<div style="color:#8a969c">Place a tree or building to see its effect.</div>'; return; }
   el.innerHTML = head +
