@@ -425,8 +425,10 @@ function init() {
   map.addLayer({ id: 'green-areas-fill', type: 'fill', source: 'green-areas', filter: ['==', ['geometry-type'], 'Polygon'],
     paint: { 'fill-color': ['match', ['get', 'state'], 'done', '#7cc576', colour],
       'fill-opacity': ['match', ['get', 'state'], 'done', 0.45, 0.3] } }, 'buildings-own');
-  map.addLayer({ id: 'green-areas-line', type: 'line', source: 'green-areas', filter: ['!=', ['geometry-type'], 'Point'],
-    paint: { 'line-color': colour, 'line-width': ['match', ['get', 'state'], 'done', 1.5, 3], 'line-dasharray': [2, 1] } }, 'buildings-own');
+  // the dashed outline is only for the area being drawn; finished areas are just the green fill
+  map.addLayer({ id: 'green-areas-line', type: 'line', source: 'green-areas',
+    filter: ['all', ['!=', ['geometry-type'], 'Point'], ['!=', ['get', 'state'], 'done']],
+    paint: { 'line-color': colour, 'line-width': 3, 'line-dasharray': [2, 1] } }, 'buildings-own');
   map.addLayer({ id: 'green-areas-corners', type: 'circle', source: 'green-areas', filter: ['==', ['geometry-type'], 'Point'],
     paint: { 'circle-radius': 5, 'circle-color': '#fff', 'circle-stroke-width': 2, 'circle-stroke-color': colour } });
   map.addSource('placement-ghost', { type: 'geojson', data: EMPTY });
