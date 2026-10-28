@@ -51,6 +51,7 @@
 <script type="module" src="time-slider.js"></script>
 <script type="module" src="intro.js"></script>
 <script type="module" src="climate-layer.js"></script>
+<script type="module" src="placement.js"></script>
 
 <script type="module">
 import * as THREE from 'three';
@@ -499,6 +500,7 @@ map.on('click', (e) => {
     return;
   }
 
+  if (window.placement && !window.placement.allow(mode, e)) return; // placement.js: not on roads, water, buildings
   const { lng, lat } = e.lngLat;
   addObject(mode, lng, lat);
   updateCount();
@@ -551,7 +553,7 @@ btnOsm.onclick = async () => {
     btnOsm.textContent = 'Failed, try again';
   }
 };
-window.__app = { map, placed, deleted, buildings, isDeleted, ready: false };
+window.__app = { map, scene, placed, deleted, buildings, isDeleted, addObject, updateCount, saveSession, ready: false };
 updateCount();
 </script>
 </body>
