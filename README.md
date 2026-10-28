@@ -5,3 +5,6 @@ City Simulator for Urban Planners that will allow them to simulate different pro
 # How to Run
 
 Run `pip install -r requirements.txt`
+
+Kinda useless but trees.py needed to be run once to create the trees.json
+Seems to be a bug where (guessing) moving forward and immeidately pressing right click causes a lot of trees to flaot
