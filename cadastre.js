@@ -193,8 +193,12 @@ export async function addCadastre({
       dirty = true;
     }
   }
-  map.on('idle', refreshHeights);
-  refreshHeights();
+  // 'idle' fires every frame (the custom layer keeps repainting), so only re-sample
+  // after the view moved or new terrain tiles arrived.
+  let heightsStale = true;
+  map.on('moveend', () => { heightsStale = true; });
+  map.on('sourcedata', (e) => { if (e.sourceId === 'terrain') heightsStale = true; });
+  map.on('idle', () => { if (heightsStale) { heightsStale = false; refreshHeights(); } });
 
   // nearest cadastre tree within `radius` meters of a clicked point
   function inspect(lngLat, radius = 6) {
