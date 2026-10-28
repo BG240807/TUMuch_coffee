@@ -140,6 +140,7 @@ export async function addCadastre({
 
     for (let i = 0; i < n; i++) {
       const t = T[i];
+      if (t.hidden) continue;
       const dx = t.x - cam.x, dz = t.z - cam.z;
       if (dx * dx + dz * dz > maxD2) continue;
       passDist++;
@@ -219,11 +220,63 @@ export async function addCadastre({
     };
   }
 
+  // ---------- selection / deletion support ----------
+  // Ray (scene coordinates, metres) vs every visible tree, modelled as a crown ellipsoid
+  // plus a trunk cylinder. Returns { index, t } for the nearest hit, or null.
+  function pick(o, d) {
+    let best = -1, bestT = Infinity;
+    for (let i = 0; i < n; i++) {
+      const t = T[i];
+      if (t.hidden) continue;
+      let hit = Infinity;
+
+      // crown: ellipsoid
+      const r = Math.max(t.crown / 2, 0.3);
+      const vr = (t.H - t.trunkH) / 2;
+      const cy = t.elev + t.trunkH + (t.typ === 1 ? vr : vr * 0.9);
+      const ox = (o.x - t.x) / r, oy = (o.y - cy) / vr, oz = (o.z - t.z) / r;
+      const dx = d.x / r, dy = d.y / vr, dz = d.z / r;
+      const a = dx * dx + dy * dy + dz * dz;
+      const b = ox * dx + oy * dy + oz * dz;
+      const cc = ox * ox + oy * oy + oz * oz - 1;
+      const disc = b * b - a * cc;
+      if (disc >= 0) {
+        const sq = Math.sqrt(disc);
+        const t1 = (-b - sq) / a, t2 = (-b + sq) / a;
+        if (t1 > 0) hit = t1; else if (t2 > 0) hit = t2;
+      }
+
+      // trunk: vertical cylinder (a little wider than drawn so it is clickable)
+      const tr = Math.max(t.trunkR, 0.4);
+      const px = o.x - t.x, pz = o.z - t.z;
+      const a2 = d.x * d.x + d.z * d.z;
+      if (a2 > 1e-9) {
+        const b2 = px * d.x + pz * d.z, c2 = px * px + pz * pz - tr * tr;
+        const disc2 = b2 * b2 - a2 * c2;
+        if (disc2 >= 0) {
+          const tt = (-b2 - Math.sqrt(disc2)) / a2;
+          const y = o.y + d.y * tt;
+          if (tt > 0 && y >= t.elev && y <= t.elev + t.trunkH && tt < hit) hit = tt;
+        }
+      }
+
+      if (hit < bestT) { bestT = hit; best = i; }
+    }
+    return best < 0 ? null : { index: best, t: bestT };
+  }
+  function info(i) {
+    const t = T[i];
+    return { x: t.x, z: t.z, elev: t.elev, H: t.H, crown: t.crown, trunkH: t.trunkH, row: rows[i] };
+  }
+  function hide(i) { if (T[i]) { T[i].hidden = true; dirty = true; } }
+  function show(i) { if (T[i]) { T[i].hidden = false; dirty = true; } }
+
   return {
     count: n,
     get visibleCount() { return visibleCount; },
     update,
     inspect,
+    pick, info, hide, show,
     setVisible(v) { meshes.forEach(m => { m.visible = v; }); }
   };
 }

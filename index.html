@@ -40,9 +40,9 @@
   <button id="btnOsm">Load real trees</button>
   <button id="btnNav">✋ Navigate only</button>
   <button id="btnInspect">ℹ Inspect tree</button>
-  <button id="btnSelect">🏠 Select building</button>
-  <button id="btnDelete">🗑 Delete building</button>
-  <button id="btnRestore">♻ Restore building</button>
+  <button id="btnSelect">👆 Select</button>
+  <button id="btnDelete">🗑 Delete selected</button>
+  <button id="btnRestore">♻ Restore deleted</button>
 </div>
 <div id="count"></div>
 <script type="module" src="metrics-card.js"></script>
@@ -115,7 +115,7 @@ function makeTree(lng, lat, s = 0.8 + Math.random() * 0.8, ci = Math.floor(Math.
   g.add(trunk, crown);
   g.scale.setScalar(s);
   g.position.copy(toScene(lng, lat, groundAt(lng, lat)));
-  g.userData = { s, ci, lift: 0 };
+  g.userData = { s, ci, lift: 0, hx: 3 * s, hz: 3 * s, y0: 0, y1: 9.6 * s };
   return g;
 }
 
@@ -150,7 +150,7 @@ function makeBuilding(lng, lat, w = 14, d = 10, floors = 5) {
   const mesh = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), mats);
   const p = toScene(lng, lat, groundAt(lng, lat));
   mesh.position.set(p.x, p.y + h / 2, p.z);
-  mesh.userData = { lift: h / 2 };
+  mesh.userData = { lift: h / 2, hx: w / 2, hz: d / 2, y0: 0, y1: h };
   return mesh;
 }
 
@@ -205,8 +205,20 @@ const customLayer = {
 const EMPTY = { type: 'FeatureCollection', features: [] };
 const buildings = new Map();  // key -> { poly, props, bbox, sbox, feature, pt, scene }
 const deleted = [];           // [[lng, lat], ...] one interior point per deleted building
-let selected = null;          // a building object from `buildings`, or null
+let selected = null;          // { kind: 'building', b } | { kind: 'tree', i } | { kind: 'placed', rec } | null
+// Everything deleted this session, in order (so "Restore" can undo the latest one):
+// { kind: 'building', pt } | { kind: 'tree', i } (cadastre tree index) | { kind: 'placed', type, lng, lat, s, ci }
+const history = [];
+// translucent orange box that marks a selected tree / placed object
+const hl = new THREE.Mesh(
+  new THREE.BoxGeometry(1, 1, 1),
+  new THREE.MeshBasicMaterial({ color: 0xff9800, transparent: true, opacity: 0.4, depthWrite: false })
+);
+hl.visible = false;
+hl.renderOrder = 10;
+scene.add(hl);
 let tookOver = false;
+let nextBid = 1;              // unique id per building polygon, used to hide the selected one in the base layer
 
 // --- geometry helpers ---
 function ringArea(r) {
@@ -258,11 +270,12 @@ function collectBuildings() {
       let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
       for (const [x, y] of ring) { x0 = Math.min(x0, x); x1 = Math.max(x1, x); y0 = Math.min(y0, y); y1 = Math.max(y1, y); }
       const a = toScene(x0, y0, 0), c = toScene(x1, y1, 0); // scene x grows east, z grows south
+      const bprops = { ...props, bid: nextBid++ };
       buildings.set(key, {
-        key, poly, props,
+        key, poly, props: bprops,
         bbox: [x0, y0, x1, y1],
         sbox: [Math.min(a.x, c.x), Math.max(a.x, c.x), Math.min(a.z, c.z), Math.max(a.z, c.z)],
-        feature: { type: 'Feature', geometry: { type: 'Polygon', coordinates: poly }, properties: props },
+        feature: { type: 'Feature', geometry: { type: 'Polygon', coordinates: poly }, properties: bprops },
         pt: null, scene: null
       });
       added++;
@@ -291,7 +304,29 @@ function refreshBuildings() {
 }
 function refreshSelection() {
   const src = map.getSource('building-selected');
-  if (src) src.setData(selected ? selected.feature : EMPTY);
+  const isBuilding = selected && selected.kind === 'building';
+  if (src) src.setData(isBuilding ? selected.b.feature : EMPTY);
+  // Hide the selected building in the base layer while it is highlighted. Two copies of the
+  // same walls on top of each other flicker (z-fighting), which showed as orange stripes.
+  if (map.getLayer('buildings-own')) {
+    map.setFilter('buildings-own', isBuilding ? ['!=', ['get', 'bid'], selected.b.props.bid] : null);
+  }
+  updateHighlight();
+}
+function updateHighlight() {
+  hl.visible = false;
+  if (!selected) return;
+  if (selected.kind === 'tree' && cadastre) {
+    const t = cadastre.info(selected.i);
+    hl.position.set(t.x, t.elev + t.H / 2, t.z);
+    hl.scale.set(t.crown, t.H, t.crown);
+    hl.visible = true;
+  } else if (selected.kind === 'placed') {
+    placedBox(selected.rec.obj, _box);
+    _box.getCenter(hl.position);
+    _box.getSize(hl.scale);
+    hl.visible = true;
+  }
 }
 
 // --- picking: cast the click's camera ray through our own building footprints ---
@@ -323,8 +358,8 @@ function insideScene(b, p) {
   if (!b.scene) b.scene = b.poly.map(r => r.map(([lng, lat]) => { const v = toScene(lng, lat, 0); return [v.x, v.z]; }));
   return pointInRing(p, b.scene[0]) && !b.scene.slice(1).some(h => pointInRing(p, h));
 }
-function pickBuilding(point) {
-  const { o, d } = pickRay(point);
+function pickBuilding(point, ray) {
+  const { o, d } = ray;
   if (d.y > -1e-4) return null;
   const ll = map.unproject(point);
   const g = groundAt(ll.lng, ll.lat);              // absolute ground height near the click
@@ -335,7 +370,7 @@ function pickBuilding(point) {
   let best = null, bestT = Infinity;
   for (const b of buildings.values()) {
     const r = segBoxRange(ax, az, bx, bz, b.sbox);
-    if (!r) continue;
+    if (!r || isDeleted(b)) continue;
     const base = g + (b.props.render_min_height || 0);
     const top = g + (b.props.render_height ?? 8);
     const N = 40;
@@ -348,29 +383,80 @@ function pickBuilding(point) {
       if (insideScene(b, [ax + (bx - ax) * s, az + (bz - az) * s])) { best = b; bestT = t; break; }
     }
   }
-  return best;
+  return best ? { b: best, t: bestT } : null;
 }
 
-function selectBuildingAt(point) {
-  const b = pickBuilding(point);
-  if (b && !b.pt) b.pt = interiorPoint(b.poly);
-  selected = b && b.pt ? b : null;
-  console.info('[buildings] click', { picked: !!selected, known: buildings.size, props: b && b.props });
+// --- select anything pickable: map buildings, cadastre trees, placed trees/buildings ---
+const _ray = new THREE.Ray();
+const _box = new THREE.Box3();
+const _hit = new THREE.Vector3();
+function placedBox(obj, box) {
+  const u = obj.userData, ground = obj.position.y - (u.lift || 0);
+  box.min.set(obj.position.x - u.hx, ground + u.y0, obj.position.z - u.hz);
+  box.max.set(obj.position.x + u.hx, ground + u.y1, obj.position.z + u.hz);
+  return box;
+}
+function selectAt(point) {
+  const ray = pickRay(point);
+  let best = null; // nearest hit along the ray wins
+  const consider = (t, sel) => { if (!best || t < best.t) best = { t, sel }; };
+
+  const bh = pickBuilding(point, ray);
+  if (bh) consider(bh.t, { kind: 'building', b: bh.b });
+
+  if (cadastre) {
+    const th = cadastre.pick(ray.o, ray.d);
+    if (th) consider(th.t, { kind: 'tree', i: th.index });
+  }
+
+  _ray.set(ray.o, ray.d);
+  for (const rec of placed) {
+    if (!_ray.intersectBox(placedBox(rec.obj, _box), _hit)) continue;
+    consider(ray.o.distanceTo(_hit), { kind: 'placed', rec });
+  }
+
+  selected = best ? best.sel : null;
+  if (selected && selected.kind === 'building') {
+    if (!selected.b.pt) selected.b.pt = interiorPoint(selected.b.poly);
+    if (!selected.b.pt) selected = null;
+  }
+  console.info('[select]', { kind: selected && selected.kind, distance: best && best.t });
   refreshSelection();
   updateCount();
 }
+
 function deleteSelected() {
   if (!selected) return;
-  deleted.push(selected.pt);
+  if (selected.kind === 'building') {
+    deleted.push(selected.b.pt);
+    history.push({ kind: 'building', pt: selected.b.pt });
+    refreshBuildings();
+  } else if (selected.kind === 'tree') {
+    cadastre.hide(selected.i);
+    history.push({ kind: 'tree', i: selected.i });
+  } else if (selected.kind === 'placed') {
+    const rec = selected.rec;
+    scene.remove(rec.obj);
+    placed.splice(placed.indexOf(rec), 1);
+    history.push({ kind: 'placed', type: rec.type, lng: rec.lng, lat: rec.lat, s: rec.obj.userData.s, ci: rec.obj.userData.ci });
+  }
   selected = null;
-  refreshBuildings();
+  refreshSelection();
   updateCount();
   saveSession();
 }
 function restoreLastDeleted() {
-  if (!deleted.length) return;
-  deleted.pop();
-  refreshBuildings();
+  const h = history.pop();
+  if (!h) return;
+  if (h.kind === 'building') {
+    const k = deleted.findIndex(p => p[0] === h.pt[0] && p[1] === h.pt[1]);
+    if (k >= 0) deleted.splice(k, 1);
+    refreshBuildings();
+  } else if (h.kind === 'tree') {
+    if (cadastre) cadastre.show(h.i);
+  } else if (h.kind === 'placed') {
+    addObject(h.type, h.lng, h.lat, h);
+  }
   updateCount();
   saveSession();
 }
@@ -381,7 +467,7 @@ function saveSession() {
   try {
     sessionStorage.setItem(STORE_KEY, JSON.stringify({
       placed: placed.map(p => ({ type: p.type, lng: p.lng, lat: p.lat, s: p.obj.userData.s, ci: p.obj.userData.ci })),
-      deleted
+      history
     }));
   } catch (err) { console.warn('Could not save session', err); }
 }
@@ -390,7 +476,10 @@ function restoreSession() {
   try { s = JSON.parse(sessionStorage.getItem(STORE_KEY) || 'null'); } catch { /* ignore */ }
   if (!s) return;
   (s.placed || []).forEach(p => addObject(p.type, p.lng, p.lat, p));
-  (s.deleted || []).forEach(d => { const p = Array.isArray(d) ? d : d && d.pt; if (p) deleted.push(p); });
+  // older sessions stored only building points in `deleted`
+  let h = s.history;
+  if (!h && s.deleted) h = s.deleted.map(d => ({ kind: 'building', pt: Array.isArray(d) ? d : d && d.pt })).filter(e => e.pt);
+  (h || []).forEach(e => { history.push(e); if (e.kind === 'building') deleted.push(e.pt); });
   refreshBuildings();
   updateCount();
 }
@@ -422,6 +511,7 @@ map.on('load', () => {
 
   addCadastre({ THREE, map, scene, toScene }).then(c => {
     cadastre = c;
+    history.forEach(h => { if (h.kind === 'tree') c.hide(h.i); });
     updateCount();
   });
 
@@ -449,13 +539,13 @@ map.on('load', () => {
     }
   });
 
-  // Highlight for the selected building: its own geometry, drawn slightly taller so it sits on top.
+  // Highlight for the selected building: its own geometry, drawn in orange in place of the base layer's copy.
   map.addSource('building-selected', { type: 'geojson', data: EMPTY });
   map.addLayer({
     id: 'buildings-selected', type: 'fill-extrusion', source: 'building-selected',
     paint: {
       'fill-extrusion-color': '#ff9800',
-      'fill-extrusion-height': ['+', ['coalesce', ['get', 'render_height'], 8], 0.3],
+      'fill-extrusion-height': ['coalesce', ['get', 'render_height'], 8],
       'fill-extrusion-base': ['coalesce', ['get', 'render_min_height'], 0],
       'fill-extrusion-opacity': 0.95
     }
@@ -464,9 +554,19 @@ map.on('load', () => {
   map.addLayer(customLayer);
 
   restoreSession();                       // bring back this session's trees/buildings/deletions
-  map.on('idle', refreshPlacedHeights);   // keep placed objects on the terrain
-  map.on('idle', collectBuildings);        // pick up building polygons from newly loaded tiles
-  collectBuildings();
+  // 'idle' fires every frame (the custom layer keeps repainting), so only do the heavy work
+  // after the view moved or new terrain / building tiles arrived.
+  let viewStale = true;
+  const markStale = () => { viewStale = true; };
+  map.on('moveend', markStale);
+  map.on('sourcedata', (e) => { if (e.sourceId === 'terrain' || e.sourceId === 'openmaptiles') markStale(); });
+  map.on('idle', () => {
+    if (!viewStale) return;
+    viewStale = false;
+    refreshPlacedHeights();   // keep placed objects on the terrain
+    collectBuildings();       // pick up building polygons from newly loaded tiles
+    updateHighlight();
+  });
 });
 
 // ---------- interaction ----------
@@ -476,8 +576,8 @@ function updateCount() {
   const b = placed.filter(p => p.type === 'building').length;
   let text = `Trees: ${t} | Buildings: ${b}`;
   if (cadastre) text += ` | Cadastre: ${cadastre.visibleCount.toLocaleString()} / ${cadastre.count.toLocaleString()} loaded`;
-  if (deleted.length) text += ` | Deleted buildings: ${deleted.length}`;
-  if (selected) text += ' | Building selected';
+  if (history.length) text += ` | Deleted: ${history.length}`;
+  if (selected) text += ` | Selected: ${{ building: 'building', tree: 'cadastre tree', placed: 'placed object' }[selected.kind]}`;
   if (countEl.textContent !== text) countEl.textContent = text;
 }
 setInterval(updateCount, 250);
@@ -490,7 +590,7 @@ map.on('click', (e) => {
     return;
   }
   if (mode === 'select') {
-    selectBuildingAt(e.point);
+    selectAt(e.point);
     return;
   }
 
