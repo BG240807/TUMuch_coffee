@@ -5,6 +5,7 @@
   <title>Heilbronn 3D</title>
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <link href="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.css" rel="stylesheet" />
+  <link href="metrics-card.css" rel="stylesheet" />
   <script src="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.js"></script>
   <script type="importmap">
     { "imports": { "three": "https://unpkg.com/three@0.160.0/build/three.module.js" } }
@@ -37,6 +38,7 @@
   <button id="btnInspect">ℹ Inspect tree</button>
 </div>
 <div id="count"></div>
+<script type="module" src="metrics-card.js"></script>
 
 <script type="module">
 import * as THREE from 'three';
