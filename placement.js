@@ -140,6 +140,8 @@ function stopArea() {
   map.doubleClickZoom.enable();
   map.getCanvas().style.cursor = '';
   btn.classList.remove('active');
+  // always leave a normal tool active (the scenario comparison restores "the previous tool")
+  if (!document.querySelector('#ui button.active')) document.getElementById('btnNav').click();
   drawState();
 }
 function finishArea() {
