@@ -28,24 +28,27 @@ let app, map, g, S, U, F, R, trees = [];
 let mode = 'temp', scen = 'live', deltaOnly = false, fxOn = true;
 
 const CSS = `
-#cl-panel{position:absolute;top:150px;left:10px;z-index:3;width:240px;padding:10px 12px;box-sizing:border-box;
- background:rgba(255,255,255,.88);backdrop-filter:blur(8px);-webkit-backdrop-filter:blur(8px);border-radius:12px;
- box-shadow:0 2px 10px rgba(0,0,0,.18);font:12px/1.35 system-ui,-apple-system,sans-serif;color:#1f2933}
-#cl-panel .cl-head{display:flex;justify-content:space-between;align-items:center;margin-bottom:6px}
-#cl-panel button{font:12px system-ui,sans-serif;border:1px solid rgba(0,0,0,.15);background:#fff;border-radius:6px;padding:4px 7px;cursor:pointer}
+#cl-panel{position:absolute;top:148px;right:54px;z-index:2;width:240px;padding:12px 14px;box-sizing:border-box;
+ background:rgba(255,255,255,.88);backdrop-filter:blur(12px);-webkit-backdrop-filter:blur(12px);border-radius:14px;
+ border:1px solid rgba(15,23,42,.08);box-shadow:0 4px 20px rgba(15,23,42,.12);font:12px/1.35 system-ui,-apple-system,sans-serif;color:#1f2a30}
+#cl-panel .cl-head{display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;font-size:13px}
+#cl-panel button{font:500 12px system-ui,-apple-system,sans-serif;border:1px solid rgba(15,23,42,.12);background:rgba(255,255,255,.8);color:#1f2a30;border-radius:7px;padding:5px 8px;cursor:pointer;transition:background .15s,color .15s}
+#cl-panel button:hover:not(.on){background:rgba(15,23,42,.05)}
 #cl-panel button.on{background:#1f2a30;color:#fff;border-color:#1f2a30}
-#cl-panel .cl-modes{display:grid;grid-template-columns:1fr 1fr;gap:4px;margin-bottom:8px}
-#cl-panel .cl-row{display:flex;flex-direction:column;gap:3px;margin-bottom:6px}
-#cl-panel select{font:12px system-ui,sans-serif;padding:3px;border-radius:6px}
-#cl-panel .cl-chk{display:flex;gap:6px;align-items:center;margin:3px 0}
-#cl-bar{height:10px;border-radius:5px;margin-top:8px;border:1px solid rgba(0,0,0,.12)}
-#cl-panel .cl-bar-l{display:flex;justify-content:space-between;color:#5d6b72;font-size:11px;margin-top:2px}
-#cl-edits{margin-top:8px;padding-top:6px;border-top:1px solid rgba(0,0,0,.08);font-size:12px}
-#cl-edits div{display:flex;justify-content:space-between}
-#cl-panel .cl-note{margin-top:6px;color:#8a969c;font-size:10px}
-#cl-tip{position:fixed;z-index:4;pointer-events:none;display:none;background:rgba(31,42,48,.92);color:#fff;padding:5px 8px;border-radius:6px;font:12px/1.35 system-ui,sans-serif}
+#cl-panel #cl-min{width:20px;height:20px;padding:0;display:inline-flex;align-items:center;justify-content:center;border-radius:5px}
+#cl-panel .cl-modes{display:grid;grid-template-columns:1fr 1fr;gap:5px;margin-bottom:10px}
+#cl-panel .cl-row{display:flex;flex-direction:column;gap:4px;margin-bottom:8px;color:#475569;font-weight:500}
+#cl-panel select{font:500 12px system-ui,-apple-system,sans-serif;padding:5px 7px;border-radius:7px;border:1px solid rgba(15,23,42,.15);background:#fff;color:#1f2a30}
+#cl-panel .cl-chk{display:flex;gap:7px;align-items:center;margin:4px 0;color:#334155}
+#cl-bar{height:8px;border-radius:999px;margin-top:8px;border:1px solid rgba(15,23,42,.1)}
+#cl-panel .cl-bar-l{display:flex;justify-content:space-between;color:#64748b;font-size:10.5px;margin-top:3px}
+#cl-edits{margin-top:8px;padding-top:8px;border-top:1px solid rgba(15,23,42,.08);font-size:11.5px;display:flex;flex-direction:column;gap:2px}
+#cl-edits div{display:flex;justify-content:space-between;gap:6px}
+#cl-panel .cl-note{margin-top:6px;color:#94a3b8;font-size:10.5px}
+#cl-tip{position:fixed;z-index:4;pointer-events:none;display:none;background:rgba(15,23,42,.92);color:#fff;padding:6px 9px;border-radius:8px;font:12px/1.35 system-ui,sans-serif;box-shadow:0 4px 12px rgba(0,0,0,.2)}
 #cl-tip span{color:#ffd9a0}
 #cl-fx{position:fixed;inset:0;z-index:0;pointer-events:none}
+@media (max-width: 760px){#cl-panel{display:none}}
 `;
 
 /* ---------------- geometry helpers ---------------- */
@@ -233,19 +236,21 @@ function colorAt(stops, t) {
   return stops[stops.length - 1][1];
 }
 const TRANSPARENT = 'data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7';
-function ensureLayer() {
-  if (map.getSource('climate-img')) return;
-  map.addSource('climate-img', { type: 'image', url: TRANSPARENT, coordinates: coords() });
+function ensureLayer(url = TRANSPARENT) {
+  if (map.getSource('climate-img')) return true;
+  map.addSource('climate-img', { type: 'image', url, coordinates: coords() });
   map.addLayer({
     id: 'climate-overlay', type: 'raster', source: 'climate-img',
     paint: { 'raster-opacity': 0.62, 'raster-fade-duration': 0, 'raster-resampling': 'linear' }
   }, map.getLayer('buildings-own') ? 'buildings-own' : undefined);
+  return false;
 }
 let cv = null;
 function paint() {
-  ensureLayer();
-  if (mode === 'off') { map.setLayoutProperty('climate-overlay', 'visibility', 'none'); return; }
-  map.setLayoutProperty('climate-overlay', 'visibility', 'visible');
+  if (mode === 'off') {
+    if (map.getLayer('climate-overlay')) map.setLayoutProperty('climate-overlay', 'visibility', 'none');
+    return;
+  }
   const key = KEY[mode], A = F.scn[key], B = F.base[key], M = N * N;
   cv = cv || Object.assign(document.createElement('canvas'), { width: N, height: N });
   const cx = cv.getContext('2d'), im = cx.createImageData(N, N);
@@ -264,7 +269,11 @@ function paint() {
     im.data[k * 4] = c[0]; im.data[k * 4 + 1] = c[1]; im.data[k * 4 + 2] = c[2]; im.data[k * 4 + 3] = a;
   }
   cx.putImageData(im, 0, 0);
-  map.getSource('climate-img').updateImage({ url: cv.toDataURL(), coordinates: coords() });
+  const dataUrl = cv.toDataURL();
+  if (ensureLayer(dataUrl)) {
+    map.setLayoutProperty('climate-overlay', 'visibility', 'visible');
+    map.getSource('climate-img').updateImage({ url: dataUrl, coordinates: coords() });
+  }
 }
 function updateLegend() {
   const bar = document.getElementById('cl-bar');
@@ -412,6 +421,12 @@ function buildUI() {
       <div class="cl-note">Illustrative model, not a measurement</div>
     </div>`;
   document.body.appendChild(p);
+  const mc = document.getElementById('metrics-card');
+  if (mc) {
+    const syncTop = () => { p.style.top = `${mc.offsetTop + mc.offsetHeight + 10}px`; };
+    new ResizeObserver(syncTop).observe(mc);
+    syncTop();
+  }
   const tip = document.createElement('div'); tip.id = 'cl-tip'; document.body.appendChild(tip);
 
   p.querySelectorAll('[data-m]').forEach(b => b.onclick = () => {

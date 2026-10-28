@@ -1,27 +1,28 @@
 /* Floating metrics card (top right). Compact by default, click to expand. */
 #metrics-card {
-  position: absolute; top: 10px; right: 54px; z-index: 2;
-  width: 220px; padding: 12px 14px; box-sizing: border-box;
-  background: rgba(255, 255, 255, 0.86); backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px);
-  border-radius: 16px; box-shadow: 0 4px 18px rgba(0, 0, 0, 0.15);
-  font: 13px/1.35 system-ui, -apple-system, sans-serif; color: #1f2a30;
+  position: absolute; top: 12px; right: 54px; z-index: 2;
+  width: 240px; padding: 12px 14px; box-sizing: border-box;
+  background: rgba(255, 255, 255, 0.88); backdrop-filter: blur(12px); -webkit-backdrop-filter: blur(12px);
+  border: 1px solid rgba(15, 23, 42, 0.08);
+  border-radius: 14px; box-shadow: 0 4px 20px rgba(15, 23, 42, 0.12);
+  font: 12.5px/1.35 system-ui, -apple-system, sans-serif; color: #1f2a30;
   cursor: pointer; user-select: none; transition: box-shadow 0.15s;
 }
-#metrics-card:hover { box-shadow: 0 6px 24px rgba(0, 0, 0, 0.22); }
-#metrics-card .mc-head { display: flex; justify-content: space-between; align-items: baseline; color: #5d6b72; font-size: 12px; }
-#metrics-card .mc-temp { font-size: 34px; font-weight: 650; letter-spacing: -0.5px; margin: 2px 0 6px; }
-#metrics-card .mc-temp small { font-size: 13px; font-weight: 500; color: #5d6b72; margin-left: 6px; letter-spacing: 0; }
-#metrics-card .mc-row { display: flex; justify-content: space-between; padding: 3px 0; }
-#metrics-card .mc-row span:first-child { color: #5d6b72; }
+#metrics-card:hover { box-shadow: 0 6px 24px rgba(15, 23, 42, 0.18); }
+#metrics-card .mc-head { display: flex; justify-content: space-between; align-items: baseline; color: #64748b; font-size: 12px; font-weight: 500; }
+#metrics-card .mc-temp { font-size: 32px; font-weight: 650; letter-spacing: -0.5px; margin: 2px 0 6px; }
+#metrics-card .mc-temp small { font-size: 12.5px; font-weight: 500; color: #64748b; margin-left: 6px; letter-spacing: 0; }
+#metrics-card .mc-row { display: flex; justify-content: space-between; padding: 2.5px 0; }
+#metrics-card .mc-row span:first-child { color: #64748b; }
 #metrics-card .mc-row b { font-weight: 600; font-variant-numeric: tabular-nums; }
-#metrics-card .mc-dot { display: inline-block; width: 9px; height: 9px; border-radius: 50%; margin-right: 6px; vertical-align: 0; }
-#metrics-card .mc-more { display: none; border-top: 1px solid rgba(0, 0, 0, 0.08); margin-top: 6px; padding-top: 6px; }
+#metrics-card .mc-dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 6px; vertical-align: 0; }
+#metrics-card .mc-more { display: none; border-top: 1px solid rgba(15, 23, 42, 0.08); margin-top: 6px; padding-top: 6px; }
 #metrics-card.open .mc-more { display: block; }
-#metrics-card .mc-note { color: #8a969c; font-size: 11px; margin-top: 6px; }
+#metrics-card .mc-note { color: #94a3b8; font-size: 10.5px; margin-top: 6px; }
 #metrics-card .mc-chev { transition: transform 0.15s; }
 #metrics-card.open .mc-chev { transform: rotate(180deg); }
 #metrics-card .mc-badge { font-size: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.4px; padding: 1px 6px; border-radius: 8px; }
 #metrics-card .mc-badge.meas { background: #e3eef6; color: #2b5d80; }
 #metrics-card .mc-badge.proj { background: #fbe7d6; color: #a2531b; }
-#metrics-card .mc-muted { color: #8a969c; font-weight: 500; }
-@media (max-width: 600px) { #metrics-card { right: 10px; top: auto; bottom: 60px; width: auto; left: 10px; } }
+#metrics-card .mc-muted { color: #94a3b8; font-weight: 500; }
+@media (max-width: 600px) { #metrics-card { right: 12px; top: auto; bottom: 60px; width: auto; left: 12px; } }
