@@ -117,7 +117,7 @@ function rebuildGeo() {
     const p = f.properties;
     if (p.brunnel === 'tunnel') continue;                       // underground
     if (f.geometry.type.includes('Polygon')) {                  // pedestrian squares are drawn as areas
-      if (p.class === 'path' || p.subclass === 'pedestrian') addArea(f, 'square', 'square');
+      if (p.class === 'path' && ['pedestrian', 'footway'].includes(p.subclass)) addArea(f, 'square', 'square'); // not platforms
       continue;
     }
     if (p.class === 'service' && p.service === 'parking_aisle') continue;
@@ -358,8 +358,9 @@ function clearPreview() {
   map.getSource('demolish-preview')?.setData(EMPTY);
   map.triggerRepaint();
 }
+const trees = (n) => `${n} tree${n === 1 ? '' : 's'}`;
 const planText = (plan) => {
-  const parts = [`${Math.round(plan.m2).toLocaleString('en')} m²`, `${plan.spots.length} trees`];
+  const parts = [`${Math.round(plan.m2).toLocaleString('en')} m²`, trees(plan.spots.length)];
   if (plan.houses.length) parts.push(`${plan.houses.length} building${plan.houses.length > 1 ? 's' : ''} demolished`);
   return parts.join(' · ');
 };
@@ -472,14 +473,14 @@ function propose(ring, label) {
   const what = `<b>Green area</b> (${label}, ${Math.round(plan.m2).toLocaleString('en')} m²): `;
   if (plan.houses.length) {
     const keep = areaPlan(ring, false);
-    say(`${what}demolish ${plan.houses.length} building${plan.houses.length > 1 ? 's' : ''} and plant ${plan.spots.length} trees? ` +
+    say(`${what}demolish ${plan.houses.length} building${plan.houses.length > 1 ? 's' : ''} and plant ${trees(plan.spots.length)}? ` +
       '<button id="pl-ok">Demolish & plant</button>' +
-      `<button id="pl-keep">Keep buildings (${keep.spots.length} trees)</button><button id="pl-cancel">Cancel</button>`);
+      `<button id="pl-keep">Keep buildings (${trees(keep.spots.length)})</button><button id="pl-cancel">Cancel</button>`);
     document.getElementById('pl-keep').onclick = () => applyArea(keep);
     document.getElementById('pl-keep').onmouseenter = () => showPreview(keep, null);
     document.getElementById('pl-ok').onmouseenter = () => showPreview(plan, null);
   } else {
-    say(`${what}plant ${plan.spots.length} trees? <button id="pl-ok">Plant</button><button id="pl-cancel">Cancel</button>`);
+    say(`${what}plant ${trees(plan.spots.length)}? <button id="pl-ok">Plant</button><button id="pl-cancel">Cancel</button>`);
   }
   document.getElementById('pl-ok').onclick = () => applyArea(plan);
   document.getElementById('pl-cancel').onclick = () => { pending = null; clearPreview(); setMode(tool || 'wand'); };
@@ -576,7 +577,7 @@ function applyArea(plan) {
   setTimeout(() => {
     const peak = climatePeak();
     const cool = peak != null && peak !== before && peak < 0 ? ` · up to −${Math.abs(peak).toFixed(1)} °C` : '';
-    floatText(ring, `+${objs.length} trees${plan.houses.length ? ` · −${plan.houses.length} buildings` : ''}${cool}`);
+    floatText(ring, `+${trees(objs.length)}${plan.houses.length ? ` · −${plan.houses.length} buildings` : ''}${cool}`);
   }, 450);
   setMode(mode || 'wand');  // stay in the tool: hover the next space
   say(`<b>Green area</b>: ${planText({ ...plan, spots: objs })}. Hover the next space, or <button id="pl-undo-area">Undo area</button>` +
