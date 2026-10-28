@@ -1,15 +1,23 @@
-// Renders the Heilbronn tree cadastre (trees.json) with instanced meshes,
-// so tens of thousands of trees stay smooth.
+// Renders the Heilbronn tree cadastre (trees.json) with instanced meshes.
+// Only trees inside the camera frustum (and within maxDistance) are drawn:
+// per-tree matrices are precomputed once, and the visible ones are packed
+// into the instance buffers whenever the camera changes.
 const TYPE_NAMES = ['Laubbaum', 'Nadelbaum', 'Obstbaum', 'Baumgruppe', 'Unbekannt'];
 const COLORS = [0x388e3c, 0x1b5e20, 0x7cb342, 0x2e7d32, 0x66bb6a];
 const clamp = (v, a, b) => Math.min(b, Math.max(a, v));
 
-export async function addCadastre({ THREE, map, scene, toScene, url = 'trees.json', fixDefaultCrowns = false, sizeScale = 0.6, maxCrown = 12 }) {
+export async function addCadastre({
+  THREE, map, scene, toScene, url = 'trees.json',
+  fixDefaultCrowns = false, sizeScale = 0.6, maxCrown = 12,
+  maxDistance = 900,      // meters from the camera; trees farther away are skipped
+  cullInterval = 100,     // ms; minimum time between culling passes while moving
+  debug = false           // log culling stats to the console
+}) {
   const rows = await (await fetch(url)).json();
   const n = rows.length;
 
   // per-tree geometry parameters
-  const T = rows.map(r => {
+  const T = rows.map((r, idx) => {
     const [lng, lat, typ, crownIn, circ] = r;
     let crown = crownIn > 0 ? crownIn : 3;
     // The cadastre uses a 2 m default crown for trees outside the city's
@@ -23,66 +31,155 @@ export async function addCadastre({ THREE, map, scene, toScene, url = 'trees.jso
     const trunkH = conifer ? H * 0.15 : H * 0.4;
     const trunkR = typ === 3 ? 0.2 : clamp(circ / (2 * Math.PI), 0.1, 0.8);
     const p = toScene(lng, lat, 0);
-    return { x: p.x, z: p.z, lng, lat, typ, crown, H, trunkH, trunkR, elev: 0, resolved: false };
+    const rad = Math.max(crown / 2, H / 2) + 1; // bounding-sphere radius for culling
+    return { idx, x: p.x, z: p.z, lng, lat, typ, crown, H, trunkH, trunkR, rad, elev: 0 };
   });
 
-  const conifers = T.filter(t => t.typ === 1);
-  const others = T.filter(t => t.typ !== 1);
+  const nConifer = T.filter(t => t.typ === 1).length;
+  const nOther = n - nConifer;
 
+  // meshes (capacity = all trees; `count` is set to the visible number)
   const mat = new THREE.MeshLambertMaterial({ flatShading: true });
   const trunkMesh = new THREE.InstancedMesh(
-    new THREE.CylinderGeometry(0.8, 1, 1, 6), new THREE.MeshLambertMaterial({ color: 0x6b4a2b }), n);
-  const crownMesh = new THREE.InstancedMesh(new THREE.IcosahedronGeometry(1, 1), mat, others.length);
-  const coneMesh = new THREE.InstancedMesh(new THREE.ConeGeometry(1, 1, 7), mat.clone(), conifers.length);
-  [trunkMesh, crownMesh, coneMesh].forEach(m => { m.frustumCulled = false; scene.add(m); });
+    new THREE.CylinderGeometry(0.8, 1, 1, 6), new THREE.MeshLambertMaterial({ color: 0x6b4a2b }), Math.max(1, n));
+  const crownMesh = new THREE.InstancedMesh(new THREE.IcosahedronGeometry(1, 1), mat, Math.max(1, nOther));
+  const coneMesh = new THREE.InstancedMesh(new THREE.ConeGeometry(1, 1, 7), mat.clone(), Math.max(1, nConifer));
+  const meshes = [trunkMesh, crownMesh, coneMesh];
+  meshes.forEach(m => { m.count = 0; m.frustumCulled = false; scene.add(m); });
+  const white = new THREE.Color(1, 1, 1);
+  crownMesh.setColorAt(0, white); // creates the instanceColor buffers
+  coneMesh.setColorAt(0, white);
 
-  others.forEach((t, i) => { t.slot = i; });
-  conifers.forEach((t, i) => { t.slot = i; });
-  T.forEach((t, i) => { t.idx = i; });
-
+  // precomputed per-tree data (indexed by tree idx)
+  const trunkM = new Float32Array(n * 16);
+  const crownM = new Float32Array(n * 16); // crown or cone matrix, depending on type
+  const colors = new Float32Array(n * 3);
   const dummy = new THREE.Object3D();
   const color = new THREE.Color();
+  let dirty = true;
 
   function place(t) {
-    // trunk
     dummy.rotation.set(0, 0, 0);
+    // trunk
     dummy.position.set(t.x, t.elev + t.trunkH / 2, t.z);
     dummy.scale.set(t.trunkR, t.trunkH, t.trunkR);
     dummy.updateMatrix();
-    trunkMesh.setMatrixAt(t.idx, dummy.matrix);
+    dummy.matrix.toArray(trunkM, t.idx * 16);
     // crown
     const r = t.crown / 2;
     if (t.typ === 1) {
       const ch = t.H - t.trunkH;
       dummy.position.set(t.x, t.elev + t.trunkH + ch / 2, t.z);
       dummy.scale.set(r, ch, r);
-      dummy.updateMatrix();
-      coneMesh.setMatrixAt(t.slot, dummy.matrix);
     } else {
       const vr = (t.H - t.trunkH) / 2;
       dummy.position.set(t.x, t.elev + t.trunkH + vr * 0.9, t.z);
       dummy.scale.set(r, vr, r);
-      dummy.updateMatrix();
-      crownMesh.setMatrixAt(t.slot, dummy.matrix);
     }
+    dummy.updateMatrix();
+    dummy.matrix.toArray(crownM, t.idx * 16);
   }
 
   T.forEach(t => {
     place(t);
     color.setHex(COLORS[t.typ]).offsetHSL(0, 0, (Math.random() - 0.5) * 0.08);
-    (t.typ === 1 ? coneMesh : crownMesh).setColorAt(t.slot, color);
+    color.toArray(colors, t.idx * 3);
   });
-  [trunkMesh, crownMesh, coneMesh].forEach(m => { m.instanceMatrix.needsUpdate = true; });
-  crownMesh.instanceColor.needsUpdate = true;
-  if (coneMesh.instanceColor) coneMesh.instanceColor.needsUpdate = true;
 
+  // ---------- culling ----------
+  const frustum = new THREE.Frustum();
+  const prevProj = new Float32Array(16);
+  let lastCull = -Infinity;
+  let visibleCount = 0;
+
+  function copy16(src, si, dst, di) {
+    for (let k = 0; k < 16; k++) dst[di + k] = src[si + k];
+  }
+
+  function upload(mesh, count) {
+    mesh.count = count;
+    mesh.instanceMatrix.needsUpdate = true;
+    if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true;
+  }
+
+  // Call once per frame (from the custom layer's render) with the three camera
+  // whose projectionMatrix was just set. Cheap when nothing changed.
+  let warned = false;
+  function update(camera, now) {
+    try {
+      cull(camera, now ?? performance.now());
+    } catch (err) {
+      if (!warned) { console.error('cadastre culling failed:', err); warned = true; }
+    }
+  }
+
+  function cull(camera, now) {
+    const pm = camera.projectionMatrix.elements;
+    let same = true;
+    for (let i = 0; i < 16; i++) if (pm[i] !== prevProj[i]) { same = false; break; }
+    if (same && !dirty) return;
+    if (!dirty && now - lastCull < cullInterval) return;
+    prevProj.set(pm);
+    lastCull = now;
+    dirty = false;
+
+    frustum.setFromProjectionMatrix(camera.projectionMatrix);
+    const planes = frustum.planes;
+
+    let cp;
+    try { cp = map.getFreeCameraOptions().position.toLngLat(); } catch { cp = map.getCenter(); }
+    const cam = toScene(cp.lng, cp.lat, 0);
+    let passDist = 0;
+    const maxD2 = maxDistance * maxDistance;
+
+    const tA = trunkMesh.instanceMatrix.array;
+    const cA = crownMesh.instanceMatrix.array, cC = crownMesh.instanceColor.array;
+    const kA = coneMesh.instanceMatrix.array, kC = coneMesh.instanceColor.array;
+    let nt = 0, nc = 0, nk = 0;
+
+    for (let i = 0; i < n; i++) {
+      const t = T[i];
+      const dx = t.x - cam.x, dz = t.z - cam.z;
+      if (dx * dx + dz * dz > maxD2) continue;
+      passDist++;
+      const y = t.elev + t.H / 2;
+      let inside = true;
+      for (let p = 0; p < 6; p++) {
+        const pl = planes[p];
+        if (pl.normal.x * t.x + pl.normal.y * y + pl.normal.z * t.z + pl.constant < -t.rad) {
+          inside = false; break;
+        }
+      }
+      if (!inside) continue;
+
+      copy16(trunkM, i * 16, tA, nt * 16); nt++;
+      if (t.typ === 1) {
+        copy16(crownM, i * 16, kA, nk * 16);
+        kC[nk * 3] = colors[i * 3]; kC[nk * 3 + 1] = colors[i * 3 + 1]; kC[nk * 3 + 2] = colors[i * 3 + 2];
+        nk++;
+      } else {
+        copy16(crownM, i * 16, cA, nc * 16);
+        cC[nc * 3] = colors[i * 3]; cC[nc * 3 + 1] = colors[i * 3 + 1]; cC[nc * 3 + 2] = colors[i * 3 + 2];
+        nc++;
+      }
+    }
+    upload(trunkMesh, nt);
+    upload(crownMesh, nc);
+    upload(coneMesh, nk);
+    visibleCount = nt;
+    if (debug) {
+      console.log(`cadastre: ${n} trees, ${passDist} within ${maxDistance} m, ${nt} in frustum`,
+        { camera: [cam.x.toFixed(0), cam.z.toFixed(0)] });
+    }
+  }
+
+  // ---------- terrain heights (only trees near the view are sampled) ----------
   // The terrain mesh changes resolution as you zoom, so re-sample elevations
   // for trees in view whenever the map goes idle to keep them on the ground.
   function refreshHeights() {
     const b = map.getBounds();
     const padLng = (b.getEast() - b.getWest()) * 0.25;
     const padLat = (b.getNorth() - b.getSouth()) * 0.25;
-    let changed = false;
     for (const t of T) {
       if (t.lng < b.getWest() - padLng || t.lng > b.getEast() + padLng ||
           t.lat < b.getSouth() - padLat || t.lat > b.getNorth() + padLat) continue;
@@ -90,12 +187,7 @@ export async function addCadastre({ THREE, map, scene, toScene, url = 'trees.jso
       if (e == null || Math.abs(e - t.elev) < 0.25) continue;
       t.elev = e;
       place(t);
-      changed = true;
-    }
-    if (changed) {
-      trunkMesh.instanceMatrix.needsUpdate = true;
-      crownMesh.instanceMatrix.needsUpdate = true;
-      coneMesh.instanceMatrix.needsUpdate = true;
+      dirty = true;
     }
   }
   map.on('idle', refreshHeights);
@@ -120,5 +212,11 @@ export async function addCadastre({ THREE, map, scene, toScene, url = 'trees.jso
     };
   }
 
-  return { count: n, inspect, setVisible(v) { [trunkMesh, crownMesh, coneMesh].forEach(m => { m.visible = v; }); } };
+  return {
+    count: n,
+    get visibleCount() { return visibleCount; },
+    update,
+    inspect,
+    setVisible(v) { meshes.forEach(m => { m.visible = v; }); }
+  };
 }

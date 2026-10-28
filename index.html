@@ -153,6 +153,7 @@ const customLayer = {
       .scale(new THREE.Vector3(unit, -unit, unit))
       .multiply(rotX);
     camera.projectionMatrix = m.multiply(l);
+    if (cadastre) cadastre.update(camera);
     this.renderer.resetState();
     this.renderer.render(scene, camera);
     map.triggerRepaint();
@@ -186,8 +187,8 @@ map.on('load', () => {
 
   addCadastre({ THREE, map, scene, toScene }).then(c => {
   cadastre = c;
-  document.getElementById('count').textContent += ` | Cadastre: ${c.count}`;
-  });
+  updateCount();
+  }); 
 
   if (map.getLayer('building-3d')) map.removeLayer('building-3d');
   map.addLayer({
@@ -205,11 +206,15 @@ map.on('load', () => {
 });
 
 // ---------- interaction ----------
+const countEl = document.getElementById('count');
 function updateCount() {
   const t = placed.filter(p => p.type === 'tree').length;
   const b = placed.filter(p => p.type === 'building').length;
-  document.getElementById('count').textContent = `Trees: ${t} | Buildings: ${b}`;
+  let text = `Trees: ${t} | Buildings: ${b}`;
+  if (cadastre) text += ` | Cadastre: ${cadastre.visibleCount.toLocaleString()} / ${cadastre.count.toLocaleString()} loaded`;
+  if (countEl.textContent !== text) countEl.textContent = text;
 }
+setInterval(updateCount, 250);
 
 map.on('click', (e) => {
   if (mode === 'nav') return;
