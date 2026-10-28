@@ -6,29 +6,33 @@
 
 ## Features
 
-All features below are implemented in this repository (`index.html`, `cadastre.js`, `metrics-card.js`, `time-slider.js`, `climate-layer.js`, `legend.js`, `about-card.js`, and `intro.js`):
+All features below are implemented in this repository (`index.html`, `cadastre.js`, `placement.js`, `comparison-card.js`, `metrics-card.js`, `time-slider.js`, `climate-layer.js`, `legend.js`, `about-card.js`, and `intro.js`):
 
 - **Interactive 3D Map of Heilbronn (`index.html`, `legend.js`, `about-card.js`, `intro.js`)**:
   - Built with **MapLibre GL JS** (`positron` vector tiles via OpenFreeMap) and a custom **Three.js** 3D WebGL layer, draped over 3D elevation from **AWS Terrain Tiles** (`terrarium` DEM).
-  - Custom cartographic styling for parks, grass/meadows, forests, water bodies, roads, and 3D extruded buildings, accompanied by a collapsible map legend, an `"About this map"` data-sources card (`i` button), and a welcome screen overlay (skippable via `?nointro`).
+  - Custom cartographic styling for parks, grass/meadows, forests, water bodies, roads, and 3D extruded buildings, accompanied by a collapsible map legend, an `"About this map"` data- & scientific-sources card (`i` button), and a welcome screen overlay (skippable via `?nointro`).
 - **43k City Trees from the Baumkataster (`cadastre.js`, `trees.json`, `first_time_setup/trees.py`)**:
   - Renders **43,031** real trees from the Stadt Heilbronn Baumkataster using Three.js `InstancedMesh` (broadleaf icosahedron crowns, conifer cone crowns, and trunks), colour-coded by tree type (`Laubbaum`, `Nadelbaum`, `Obstbaum`, `Baumgruppe`, `Unbekannt`) with camera frustum and distance culling (`900 m`) plus automatic terrain elevation clamping.
   - **Inspect Tree mode (`ℹ Inspect tree`)**: Click any cadastre tree to open a popup with its German and scientific species name, tree type, street, trunk circumference (`Stammumfang`), crown diameter (`Krone`), and tree number (`BAUM_NR`).
-  - **Live OSM Trees (`Load real trees`)**: Fetch additional mapped trees around the current view via the OpenStreetMap Overpass API.
-- **Live & Monthly Metrics Card (`metrics-card.js`, `metrics-card.css`)**:
+- **Live & Monthly Metrics Card with Design Impact (`metrics-card.js`, `metrics-card.css`)**:
   - Floating expandable card in the top-right corner showing live Heilbronn weather and air quality from Open-Meteo: temperature, feels-like temperature, European AQI with EEA colour bands, relative humidity, PM2.5, PM10, NO₂, ozone, wind speed, and precipitation.
+  - **Live Design Impact Banner**: Displays real-time local changes from your urban interventions: ambient air cooling (`Δ°C air` & peak), human thermal comfort (`Δ°C shade feel` / PET), PM2.5 change (`%`), stormwater runoff reduction (`%`), rooftop solar yield (`kWh/yr`), and avoided CO₂ (`t/yr`).
+  - **Regulatory & Local Benchmarks**: Compares current and projected pollution against **EU 2030 binding limits (Directive 2024/2881)**, **WHO 2021 guidelines**, and the **LUBW Heilbronn Weinsberger Straße baseline**.
 - **Time Slider 2020–2050: Measured vs. Projected Data (`time-slider.js`, `data/climate-months.json`, `scripts/fetch_climate.py`)**:
-  - Scrub month by month from **Jan 2020 to Dec 2050** (or jump back to **Now**), all precomputed in `data/climate-months.json` for instant offline scrubbing:
+  - Scrub month by month from **Jan 2020 to Dec 2050** (or jump back to **Now**), all precomputed in `data/climate-months.json` for instant offline scrubbing and linked live to the ground climate heatmap:
     - **Measured history (2020–present)**: Monthly averages from Open-Meteo ERA5 reanalysis and CAMS air quality archive.
     - **Climate projections (present–2050)**: Ensemble mean of **7 CMIP6 HighResMIP climate models** averaged over a ±5-year window and bias-corrected per calendar month against measured 2021–2025 ERA5 data. Displays average/max temperature, hot days (≥ 30 °C), tropical nights (≥ 20 °C), monthly rainfall, heavy-rain days (≥ 20 mm), wind speed, humidity, and SSP2-4.5 PM2.5/PM10 estimates (Clayton et al. 2024).
-- **Interactive Street Editing: Place Trees, Place Buildings, Select & Delete Buildings (`index.html`)**:
-  - **Place trees & buildings (`🌳 Place tree`, `🏢 Place building`, `↩ Undo`)**: Click anywhere on the map to add 3D trees or 5-storey procedural-window buildings clamped to the terrain.
-  - **Select, delete & restore map buildings (`🏠 Select building`, `🗑 Delete building`, `♻ Restore building`)**: Extracts individual building footprints from vector tiles, raycasts 3D clicks using the shared camera projection matrix, highlights the selected building in orange, and lets you remove (`Delete`/`Backspace` or button) or restore existing buildings to test unsealing and redevelopment.
-  - **Session persistence**: All placed trees, placed buildings, and deleted buildings are saved in `sessionStorage` across reloads.
-- **Climate Layers & Scenario Comparison (`climate-layer.js`)**:
-  - Computes a 2 km × 2 km (100 × 100 grid, 20 m cells) microclimate heuristic model from building density, Baumkataster + user tree canopy, parks/green cover, water bodies, road traffic weights, and terrain altitude.
-  - Switch between **🌡 Temp**, **🏭 Pollution (PM2.5)**, and **💧 Humidity** overlays across four weather scenarios (**Live now**, **Heatwave 34 °C**, **Winter storm −2 °C**, **Heavy rain 11 °C**) with an animated canvas **rain / snow particle effect** that transitions between rain and snow based on local cell temperature (`≤ 0.5 °C`).
-  - **Before/After Scenario Comparison**: Compares baseline vs. your scene edits (`+trees`, `+buildings`, `−deleted buildings`), with a **"Show only the change from my edits"** delta heatmap toggle, a live hover tooltip showing local values and `Δ°C`, and a **"Your edits"** summary quantifying affected area (`m²`) plus average and peak changes in temperature (`°C`), PM2.5 (`%`), and humidity.
+- **Urban Planner Tools: Smart Placement, Green Areas, Tree Brush, Rotatable Buildings & Multi-Select (`index.html`, `placement.js`, `comparison-card.js`)**:
+  - **Placement Rules & 3D Ghost Previews (`placement.js`)**: Checks real vector-tile geometry (roads, railways, water, existing buildings, and trees) in metres and shows a see-through green (`✓`) or red (`✗`) 3D preview before placing.
+  - **One-Click Green Area (`🌳 Green area`)**: Hover any city block, square, or lawn to preview new trees and highlight buildings inside in red; choose **Demolish & plant** or **Keep buildings** (or hold `Shift` to draw custom polygon corners) with animated tree growth and floating cooling callouts.
+  - **Tree Brush (`🖌️ Tree brush`)**: Hold and drag to paint trees along streets and parks with adjustable brush radius (`[` / `]` or `−` / `+`) and per-stroke undo.
+  - **Customizable Map-Matched 3D Buildings (`🏢 Place building`)**: Place sandstone 3D buildings matching the MapLibre style with live controls for **rotation (`R` or `[` `]`, 15° steps)**, **width (`W`)**, **depth (`D`)**, and **storeys (`1–15` floors)**.
+  - **Multi-Select, Box-Select, Delete & Restore (`👆 Select`, `🗑 Delete`, `♻ Restore`)**: Click, `Shift`-click, or drag a selection box to select multiple buildings, cadastre trees, or placed items at once; delete or batch-restore them, and toggle **Original vs. Proposal** in the **Scenario comparison** card (`comparison-card.js`).
+- **Scientifically Grounded Climate Layers (`climate-layer.js`)**:
+  - Computes a 3.2 km × 3.2 km microclimate grid with smooth radial edge blending from building sealing, Baumkataster + user tree canopy, parks, water bodies, road traffic weights, and terrain altitude, calibrated to empirical German/European urban climate literature:
+    - **🌡 Air Temp ($T_a$)**: Logarithmic single-tree cooling (`−0.2 to −0.6 °C`) and neighborhood canopy cooling (`−0.8 °C` per `+10%` canopy, capped at `−1.5 °C` with a rural thermal floor) vs. Canopy UHI warming (`+1.8 °C`) on sealed concrete.
+    - **☀️ Feel (PET)**: Physiologically Equivalent Temperature modeling solar shielding and evapotranspiration (`−4 to −11 °C` under shade canopy; `+3.5 to +6.0 °C` over unshaded concrete).
+    - **🏭 Pollution (PM2.5) & 💧 Humidity**: Models vegetation deposition, SuDS stormwater runoff retention (`−30% to −50%` on unsealed green areas vs. `95%` on sealed concrete), heavy-rain washout (`−90%` coarse PM vs. `−21%` PM2.5), and a **Car-free day** scenario (`−84% NO₂`, `−50% PM10`, `−15% PM2.5`).
 
 ## How to run
 

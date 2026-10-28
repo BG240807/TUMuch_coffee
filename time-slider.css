@@ -22,3 +22,7 @@
 #time-slider .ts-split .meas { transform: translateX(calc(-100% - 6px)); color: #2b5d80; }
 #time-slider .ts-split .proj { transform: translateX(6px); color: #a2531b; }
 #time-slider .ts-years { display: flex; justify-content: space-between; color: #94a3b8; font-size: 10px; }
+@media (max-width: 1150px), (max-height: 760px) {
+  #time-slider { width: min(360px, calc(100vw - 440px)); min-width: 240px; padding: 6px 12px 5px; font-size: 11px; }
+  #time-slider .ts-label { font-size: 12.5px; }
+}

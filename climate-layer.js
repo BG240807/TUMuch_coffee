@@ -1,27 +1,29 @@
 // climate-layer.js — local temperature / pollution / humidity layers + rain & snow for the Heilbronn map.
 // Illustrative heuristic model: values come from land use (buildings, trees, parks, water, roads, elevation),
 // not from measurements. City-wide base values come from Open-Meteo.
-const N = 100;                 // grid cells per side
-const HALF = 1000;             // metres from grid centre to edge
-const CELL = (2 * HALF) / N;   // 20 m cells
+const N = 120;                 // grid cells per side
+const HALF = 1600;             // metres from grid centre to edge (3.2 km × 3.2 km coverage)
+const CELL = (2 * HALF) / N;   // ~26.7 m cells
 const MLAT = 111320;           // metres per degree latitude
 const clamp = (v, a, b) => Math.min(b, Math.max(a, v));
 const fmt = (v, d = 1) => (v > 0 ? '+' : '') + v.toFixed(d);
 
 const SCEN = {
-  live: { T: 12, rh: 65, pm: 8, precip: 0 },
-  heat: { T: 34, rh: 35, pm: 9, precip: 0 },
-  snow: { T: -2, rh: 88, pm: 14, precip: 2.5 },
-  rain: { T: 11, rh: 92, pm: 5, precip: 4 }
+  live: { T: 12, rh: 65, pm: 8, pm10: 15, no2: 25, precip: 0 },
+  heat: { T: 34, rh: 35, pm: 14, pm10: 24, no2: 30, precip: 0 },
+  snow: { T: -2, rh: 88, pm: 14, pm10: 22, no2: 35, precip: 2.5 },
+  rain: { T: 11, rh: 92, pm: 6.3, pm10: 4.5, no2: 18, precip: 8, rainWashout: true },
+  carfree: { T: 12, rh: 65, pm: 6.8, pm10: 7.5, no2: 4.0, precip: 0, carfree: true }
 };
-const KEY = { temp: 'T', pm: 'PM', rh: 'RH' };
+const KEY = { temp: 'T', pet: 'PET', pm: 'PM', rh: 'RH' };
 const STOPS = {
   T: [[0, [49, 104, 189]], [.25, [120, 178, 222]], [.45, [255, 247, 200]], [.65, [255, 190, 80]], [.85, [230, 80, 40]], [1, [150, 0, 20]]],
+  PET: [[0, [50, 110, 200]], [.2, [60, 180, 160]], [.4, [100, 200, 90]], [.6, [245, 215, 60]], [.8, [235, 105, 40]], [1, [155, 15, 45]]],
   PM: [[0, [120, 200, 130]], [.3, [240, 225, 100]], [.55, [240, 150, 50]], [.8, [160, 30, 30]], [1, [10, 10, 10]]],
   RH: [[0, [247, 244, 235]], [.5, [150, 200, 230]], [1, [20, 70, 160]]]
 };
-const MIN_SPAN = { T: 3, PM: 4, RH: 10 };
-const MIN_DELTA = { T: 0.02, PM: 0.05, RH: 0.1 };
+const MIN_SPAN = { T: 3, PET: 5, PM: 4, RH: 10 };
+const MIN_DELTA = { T: 0.02, PET: 0.05, PM: 0.05, RH: 0.1 };
 const ROAD_W = { motorway: 1, trunk: 0.9, primary: 0.7, secondary: 0.5, tertiary: 0.35, minor: 0.12, service: 0.05 };
 
 let app, map, g, S, U, F, R, trees = [];
@@ -33,15 +35,22 @@ const MONTH_NAMES = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Se
 const monthsData = fetch('data/climate-months.json').then(r => r.json()).then(j => j.months).catch(() => ({}));
 
 const CSS = `
-#cl-panel{position:absolute;top:148px;right:54px;z-index:2;width:240px;padding:12px 14px;box-sizing:border-box;
+#cl-panel{position:absolute;top:148px;right:54px;z-index:2;width:240px;max-height:calc(100vh - 170px);overflow-y:auto;padding:12px 14px;box-sizing:border-box;
  background:rgba(255,255,255,.88);backdrop-filter:blur(12px);-webkit-backdrop-filter:blur(12px);border-radius:14px;
  border:1px solid rgba(15,23,42,.08);box-shadow:0 4px 20px rgba(15,23,42,.12);font:12px/1.35 system-ui,-apple-system,sans-serif;color:#1f2a30}
+@media (max-width: 1150px), (max-height: 760px){
+ #cl-panel{width:206px;padding:9px 11px;font-size:11px;right:46px;max-height:calc(100vh - 150px)}
+ #cl-panel .cl-head{font-size:12px;margin-bottom:6px}
+ #cl-panel button,#cl-panel select{font-size:11px;padding:4px 6px}
+}
 #cl-panel .cl-head{display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;font-size:13px}
 #cl-panel button{font:500 12px system-ui,-apple-system,sans-serif;border:1px solid rgba(15,23,42,.12);background:rgba(255,255,255,.8);color:#1f2a30;border-radius:7px;padding:5px 8px;cursor:pointer;transition:background .15s,color .15s}
 #cl-panel button:hover:not(.on){background:rgba(15,23,42,.05)}
 #cl-panel button.on{background:#1f2a30;color:#fff;border-color:#1f2a30}
 #cl-panel #cl-min{width:20px;height:20px;padding:0;display:inline-flex;align-items:center;justify-content:center;border-radius:5px}
 #cl-panel .cl-modes{display:grid;grid-template-columns:1fr 1fr;gap:5px;margin-bottom:10px}
+#cl-panel .cl-modes button[data-m="off"]{grid-column:1 / -1}
+#cl-panel .cl-modes button{white-space:nowrap;padding:5px 4px}
 #cl-panel .cl-row{display:flex;flex-direction:column;gap:4px;margin-bottom:8px;color:#475569;font-weight:500}
 #cl-panel select{font:500 12px system-ui,-apple-system,sans-serif;padding:5px 7px;border-radius:7px;border:1px solid rgba(15,23,42,.15);background:#fff;color:#1f2a30}
 #cl-panel .cl-chk{display:flex;gap:7px;align-items:center;margin:4px 0;color:#334155}
@@ -188,13 +197,52 @@ function buildStatic() {
 /* ---------------- user edits ---------------- */
 function buildUser() {
   const M = N * N;
-  U = { built: new Float32Array(M), removed: new Float32Array(M), canopy: new Float32Array(M), nTrees: 0, nBuild: 0, nRemoved: 0 };
+  const area = CELL * CELL;
+  U = {
+    built: new Float32Array(M),
+    removed: new Float32Array(M),
+    canopy: new Float32Array(M),
+    park: new Float32Array(M),
+    nTrees: 0,
+    nBuild: 0,
+    nRemoved: 0,
+    nParks: 0,
+    totalBuildArea: 0
+  };
   for (const p of app.placed) {
     const k = idx(p.lng, p.lat);
-    if (p.type === 'tree') { U.nTrees++; if (k >= 0) U.canopy[k] += Math.PI * (3 * (p.obj.userData.s || 1)) ** 2; }
-    else { U.nBuild++; if (k >= 0) U.built[k] += 140; } // 14 m x 10 m footprint
+    if (p.type === 'tree') {
+      U.nTrees++;
+      if (k >= 0) U.canopy[k] += Math.PI * (3 * (p.obj?.userData?.s || 1)) ** 2;
+    } else if (p.type === 'building') {
+      U.nBuild++;
+      const bArea = (p.obj && p.obj.userData && p.obj.userData.area) || 140;
+      U.totalBuildArea += bArea;
+      if (k >= 0) U.built[k] += bArea;
+    } else if (p.type === 'park') {
+      U.nParks++;
+      if (k >= 0) U.park[k] += (p.obj?.userData?.area || 400);
+    }
   }
-  if (app.deleted.length) {
+
+  // Green areas created via wand / draw tool in placement.js
+  let greenAreas = [];
+  try {
+    greenAreas = (JSON.parse(sessionStorage.getItem('heilbronn3d-green-areas')) || []).filter(a => a && a.ring);
+  } catch { greenAreas = []; }
+  U.nParks += greenAreas.length;
+  for (const ga of greenAreas) {
+    if (ga.ring && ga.ring.length >= 3) {
+      let r = ga.ring;
+      const first = r[0], last = r[r.length - 1];
+      if (Math.hypot(first[0] - last[0], first[1] - last[1]) > 1e-7) {
+        r = [...r, first];
+      }
+      rasterPoly([r], U.park);
+    }
+  }
+
+  if (app.deleted && app.deleted.length) {
     for (const e of S.bList) if (app.isDeleted(e.b)) { U.removed[e.k] += e.a; U.nRemoved++; }
   }
 }
@@ -202,28 +250,82 @@ function buildUser() {
 /* ---------------- the model ---------------- */
 function field(sc, withUser) {
   const area = CELL * CELL, M = N * N;
-  const sealed = new Float32Array(M), canopy = new Float32Array(M);
+  const sealed = new Float32Array(M), canopy = new Float32Array(M), userVeg = new Float32Array(M), userBuilt = new Float32Array(M);
   for (let k = 0; k < M; k++) {
     let b = S.built[k], c = S.canopy[k];
-    if (withUser) { b += U.built[k] - U.removed[k]; c += U.canopy[k]; }
+    if (withUser) {
+      b = Math.max(0, b + U.built[k] - U.removed[k] * 1.4);
+      c += U.canopy[k] * 1.8;
+      userVeg[k] = clamp((U.canopy[k] * 2.2 + U.removed[k] * 0.8 + (U.park[k] || 0) * area * 0.85) / area, 0, 1.2);
+      userBuilt[k] = clamp((U.built[k] * 1.6) / area, 0, 1.2);
+    }
     sealed[k] = clamp((b / area) * 1.8, 0, 1);
     canopy[k] = clamp(c / area, 0, 1);
   }
   const sealedB = blur(sealed, 1, 2), canopyB = blur(canopy, 1, 2);
-  const T = new Float32Array(M), PM = new Float32Array(M), RH = new Float32Array(M);
+  const uVegB = withUser ? blur(userVeg, 2, 2) : userVeg;
+  const uBuiltB = withUser ? blur(userBuilt, 2, 2) : userBuilt;
+
+  const T = new Float32Array(M), PET = new Float32Array(M), PM = new Float32Array(M), RH = new Float32Array(M), Runoff = new Float32Array(M);
+
+  const isCarFree = !!sc.carfree;
+  const trafFactor = isCarFree ? 0.16 : 1.0;
+  const basePm = isCarFree ? (sc.pm * 0.85) : sc.pm;
+  const rainWashout = (sc.precip > 0) ? clamp(1 - 0.05 * sc.precip, 0.65, 1.0) : 1.0;
+
   for (let k = 0; k < M; k++) {
-    const veg = clamp(canopyB[k] + 0.5 * S.greenB[k], 0, 1);
-    T[k] = sc.T + 4.5 * sealedB[k] - 3.5 * veg - 1.8 * S.waterB[k] - 0.0065 * (S.elev[k] - S.meanElev);
-    PM[k] = Math.max(0.3 * sc.pm, sc.pm * (0.75 + 0.9 * S.trafB[k] + 0.35 * sealedB[k]) * (1 - 0.4 * veg));
-    RH[k] = clamp(sc.rh - 2 * (T[k] - sc.T) + 6 * veg + 8 * S.waterB[k], 15, 100);
+    const baseVeg = clamp(canopyB[k] + 0.5 * S.greenB[k], 0, 1);
+
+    // --- 1. Ambient Air Temp (Ta) ---
+    // Single tree: cools local cell by -0.2 to -0.6 °C with log diminishing returns (Math.log1p)
+    // +10% canopy cools neighborhood by -0.8 °C, capped at -1.5 °C for +30% canopy
+    // Added concrete buildings warm local Ta up to +1.8 °C
+    // Thermal floor: cannot cool below rural background (sc.T)
+    const baseTreeCool = -0.983 * Math.log1p(baseVeg * 12.0);
+    const userTreeCool = withUser ? -Math.min(1.5, 0.983 * Math.log1p(uVegB[k] * 12.0)) : 0;
+    const userBuildWarm = withUser ? Math.min(1.8, 1.8 * uBuiltB[k]) : 0;
+
+    const rawT = sc.T + 4.2 * sealedB[k] + baseTreeCool + userTreeCool + userBuildWarm
+      - 1.8 * S.waterB[k] - 0.0065 * (S.elev[k] - S.meanElev);
+
+    T[k] = Math.max(sc.T - Math.max(0, 0.0065 * (S.elev[k] - S.meanElev)), rawT);
+
+    // --- 2. Perceived Temperature (PET / Shade Comfort) ---
+    // Trees/parks reduce local PET by -4.0 to -11.0 °C (dense shade + evapotranspiration)
+    // Unshaded concrete/added buildings raise PET by +3.5 to +6.0 °C
+    const solarGain = Math.max(0, (sc.T - 8) * 0.28) * (1 + 1.2 * sealedB[k]);
+    const baseShade = -(4.0 * Math.min(1.0, baseVeg * 2.0) + 7.0 * (baseVeg * baseVeg));
+
+    let userPetDelta = 0;
+    if (withUser) {
+      const uShade = clamp(userVeg[k] * 2.5 + uVegB[k] * 1.5, 0, 1);
+      const dPetVeg = -(4.0 * clamp(uShade * 2.0, 0, 1) + 7.0 * uShade);
+      const uConcrete = clamp(userBuilt[k] * 2.0 + uBuiltB[k], 0, 1);
+      const dPetBuilt = +(3.5 * clamp(uConcrete * 1.5, 0, 1) + 2.5 * uConcrete);
+      userPetDelta = dPetVeg + dPetBuilt;
+    }
+    PET[k] = T[k] + solarGain + baseShade + userPetDelta;
+
+    // --- 3. Particulate Matter (PM2.5) ---
+    const trafProxy = 0.9 * S.trafB[k] * trafFactor;
+    const vegFilter = clamp(0.4 * baseVeg + 0.45 * uVegB[k], 0, 0.75);
+    PM[k] = Math.max(0.2 * basePm, basePm * (0.75 + trafProxy + 0.35 * sealedB[k] + 0.3 * uBuiltB[k]) * (1 - vegFilter) * rainWashout);
+
+    // --- 4. Relative Humidity (RH) ---
+    RH[k] = clamp(sc.rh - 2.0 * (T[k] - sc.T) + 6.0 * baseVeg + 5.0 * uVegB[k] + 8.0 * S.waterB[k], 15, 100);
+
+    // --- 5. Stormwater Runoff Coefficient ---
+    const cBase = clamp(0.95 * sealedB[k] + 0.20 * baseVeg + 0.50 * (1 - sealedB[k] - baseVeg), 0.15, 0.95);
+    Runoff[k] = withUser ? clamp(cBase - 0.42 * uVegB[k] + 0.48 * uBuiltB[k], 0.15, 0.95) : cBase;
   }
-  return { T, PM, RH };
+
+  return { T, PET, PM, RH, Runoff };
 }
 function computeRanges() {
   // Slider month: colour scale comes from the same month in 2020–2025, so a warmer future month looks redder.
   const ref = scen === 'month' && monthRef ? field(monthRef, false) : F.base;
   R = {};
-  for (const key of ['T', 'PM', 'RH']) {
+  for (const key of ['T', 'PET', 'PM', 'RH']) {
     let lo = Infinity, hi = -Infinity;
     for (const v of ref[key]) { if (v < lo) lo = v; if (v > hi) hi = v; }
     if (hi - lo < MIN_SPAN[key]) { const m = (hi + lo) / 2; lo = m - MIN_SPAN[key] / 2; hi = m + MIN_SPAN[key] / 2; }
@@ -264,14 +366,24 @@ function paint() {
   let maxAbs = 0;
   if (deltaOnly) for (let k = 0; k < M; k++) maxAbs = Math.max(maxAbs, Math.abs(A[k] - B[k]));
   const [lo, hi] = R[key];
+  const half = N / 2;
   for (let k = 0; k < M; k++) {
+    const i = k % N, j = (k - i) / N;
+    // Smooth radial + edge vignette so the overlay blends softly instead of showing a sharp square box
+    const rx = (i + 0.5 - half) / half, ry = (j + 0.5 - half) / half;
+    const r = Math.hypot(rx, ry);
+    const fade = clamp((1.02 - r) / 0.28, 0, 1);
+    const edgeFade = fade * fade * (3 - 2 * fade);
     let c, a;
     if (deltaOnly) {
       const d = A[k] - B[k];
       c = d < 0 ? [40, 110, 220] : [225, 50, 40];
-      a = maxAbs > MIN_DELTA[key] ? Math.round(Math.min(1, Math.abs(d) / maxAbs) * 230) : 0;
+      a = maxAbs > MIN_DELTA[key] ? Math.round(Math.min(1, Math.abs(d) / maxAbs) * 235 * edgeFade) : 0;
     } else {
-      c = colorAt(STOPS[key], (A[k] - lo) / (hi - lo)); a = 235;
+      // Amplify local user-edit delta visually on the colour ramp so new parks/buildings stand out clearly
+      const val = B[k] + (A[k] - B[k]) * 1.65;
+      c = colorAt(STOPS[key], (val - lo) / (hi - lo));
+      a = Math.round(230 * edgeFade);
     }
     im.data[k * 4] = c[0]; im.data[k * 4 + 1] = c[1]; im.data[k * 4 + 2] = c[2]; im.data[k * 4 + 3] = a;
   }
@@ -286,42 +398,116 @@ function updateLegend() {
   const bar = document.getElementById('cl-bar');
   if (mode === 'off') { bar.style.display = 'none'; return; }
   bar.style.display = 'block';
-  const key = KEY[mode], unit = { T: '°C', PM: 'µg/m³', RH: '%' }[key];
+  const key = KEY[mode], unit = { T: '°C', PET: '°C feel', PM: 'µg/m³', RH: '%' }[key];
   const lo = document.getElementById('cl-lo'), mid = document.getElementById('cl-mid'), hi = document.getElementById('cl-hi');
   if (deltaOnly) {
     bar.style.background = 'linear-gradient(90deg,rgb(40,110,220),#f4f4f4,rgb(225,50,40))';
-    lo.textContent = 'decrease'; mid.textContent = ''; hi.textContent = 'increase';
+    lo.textContent = 'cooling'; mid.textContent = ''; hi.textContent = 'warming';
   } else {
     bar.style.background = 'linear-gradient(90deg,' + STOPS[key].map(([t, c]) => `rgb(${c}) ${t * 100}%`).join(',') + ')';
     lo.textContent = R[key][0].toFixed(key === 'PM' ? 1 : 0) + ' ' + unit;
-    mid.textContent = mode === 'pm' ? 'black = highest' : '';
+    if (key === 'PET') mid.textContent = 'comfort ~22°';
+    else if (key === 'PM') mid.textContent = 'black = highest';
+    else mid.textContent = '';
     hi.textContent = R[key][1].toFixed(key === 'PM' ? 1 : 0) + ' ' + unit;
   }
 }
 function updateEdits() {
   const el = document.getElementById('cl-edits');
   const M = N * N;
-  let n = 0, dT = 0, dPM = 0, dRH = 0, pT = 0, pPM = 0, pRH = 0;
+  let n = 0, dT = 0, dPET = 0, dPM = 0, dRH = 0;
+  let pT = 0, pPET = 0, pPM = 0, pRH = 0;
+  let sumBaseRunoff = 0, sumScnRunoff = 0;
+
   for (let k = 0; k < M; k++) {
-    const a = F.scn.T[k] - F.base.T[k], b = F.scn.PM[k] / F.base.PM[k] - 1, c = F.scn.RH[k] - F.base.RH[k];
-    if (Math.abs(a) > 0.02 || Math.abs(b) > 0.005 || Math.abs(c) > 0.1) {
-      n++; dT += a; dPM += b; dRH += c;
+    const a = F.scn.T[k] - F.base.T[k];
+    const b = F.scn.PM[k] / (F.base.PM[k] || 1) - 1;
+    const c = F.scn.RH[k] - F.base.RH[k];
+    const d = F.scn.PET[k] - F.base.PET[k];
+
+    if (Math.abs(a) > 0.02 || Math.abs(d) > 0.05 || Math.abs(b) > 0.005 || Math.abs(c) > 0.1) {
+      n++;
+      dT += a;
+      dPET += d;
+      dPM += b;
+      dRH += c;
       if (Math.abs(a) > Math.abs(pT)) pT = a;
+      if (Math.abs(d) > Math.abs(pPET)) pPET = d;
       if (Math.abs(b) > Math.abs(pPM)) pPM = b;
       if (Math.abs(c) > Math.abs(pRH)) pRH = c;
+
+      if (F.base.Runoff && F.scn.Runoff) {
+        sumBaseRunoff += F.base.Runoff[k];
+        sumScnRunoff += F.scn.Runoff[k];
+      }
     }
   }
-  const head = `<div><b>Your edits</b><span>+${U.nTrees} trees, +${U.nBuild} bldg, −${U.nRemoved} bldg</span></div>`;
+
+  let dRunoffPct = 0;
+  if (sumBaseRunoff > 0) {
+    dRunoffPct = ((sumScnRunoff - sumBaseRunoff) / sumBaseRunoff) * 100;
+  }
+
+  const solarKwhYr = Math.round((U.totalBuildArea || 0) * 175);
+  const solarCo2SavedKgYr = solarKwhYr * 0.35;
+  const treeCo2SavedKgYr = (U.nTrees || 0) * 25 + (U.nParks || 0) * 1500;
+  const co2SavedKgYr = Math.round(solarCo2SavedKgYr + treeCo2SavedKgYr);
+
+  const counts = { tree: U.nTrees, park: U.nParks, building: U.nBuild };
+  const hasInterventions = (U.nTrees > 0 || U.nBuild > 0 || U.nRemoved > 0 || U.nParks > 0);
+  const active = !showOriginal && (hasInterventions || n > 0);
+
+  const avgT = n ? dT / n : 0;
+  const avgPET = n ? dPET / n : 0;
+  const avgPM = n ? (dPM / n) * 100 : 0;
+  const avgRH = n ? dRH / n : 0;
+
   window.dispatchEvent(new CustomEvent('climate-edits', {
-    detail: { active: !showOriginal && n > 0, dT: n ? dT / n : 0, peakT: pT, dPM: n ? (dPM / n) * 100 : 0, dRH: n ? dRH / n : 0, areaM2: Math.round(n * CELL * CELL), nTrees: U.nTrees, nBuild: U.nBuild, nRemoved: U.nRemoved, showOriginal }
+    detail: {
+      active,
+      dT: Number(avgT.toFixed(2)),
+      peakT: Number(pT.toFixed(2)),
+      dPET: Number(avgPET.toFixed(1)),
+      peakPET: Number(pPET.toFixed(1)),
+      dPM: Number(avgPM.toFixed(1)),
+      dRH: Number(avgRH.toFixed(1)),
+      dRunoffPct: Number(dRunoffPct.toFixed(1)),
+      solarKwhYr,
+      co2SavedKgYr,
+      counts,
+      areaM2: Math.round(n * CELL * CELL),
+      nTrees: U.nTrees,
+      nBuild: U.nBuild,
+      nRemoved: U.nRemoved,
+      showOriginal
+    }
   }));
-  if (showOriginal) { el.innerHTML = head + '<div style="color:#8a969c">Viewing the original city: edits hidden.</div>'; return; }
-  if (!n) { el.innerHTML = head + '<div style="color:#8a969c">Place a tree or building to see its effect.</div>'; return; }
+
+  const parkText = U.nParks > 0 ? `, +${U.nParks} park` : '';
+  const head = `<div><b>Your edits</b><span>+${U.nTrees} trees${parkText}, +${U.nBuild} bldg, −${U.nRemoved} bldg</span></div>`;
+
+  if (showOriginal) {
+    el.innerHTML = head + '<div style="color:#8a969c">Viewing the original city: edits hidden.</div>';
+    return;
+  }
+  if (!n) {
+    el.innerHTML = head + '<div style="color:#8a969c">Place a tree or building to see its effect.</div>';
+    return;
+  }
+
+  let co2Text = '';
+  if (co2SavedKgYr >= 1000) co2Text = `<b>${(co2SavedKgYr / 1000).toFixed(1)} t/yr</b>`;
+  else if (co2SavedKgYr > 0) co2Text = `<b>${co2SavedKgYr} kg/yr</b>`;
+
   el.innerHTML = head +
     `<div><span>Affected area</span><b>≈ ${Math.round(n * CELL * CELL).toLocaleString()} m²</b></div>` +
-    `<div><span>Temperature</span><b>${fmt(dT / n)} °C <small>(peak ${fmt(pT)})</small></b></div>` +
-    `<div><span>PM2.5</span><b>${fmt((dPM / n) * 100)} % <small>(peak ${fmt(pPM * 100)})</small></b></div>` +
-    `<div><span>Humidity</span><b>${fmt(dRH / n)} pts <small>(peak ${fmt(pRH)})</small></b></div>`;
+    `<div><span>Temperature</span><b>${fmt(avgT)} °C <small>(peak ${fmt(pT)})</small></b></div>` +
+    `<div><span>Shade feel (PET)</span><b>${fmt(avgPET)} °C <small>(peak ${fmt(pPET)})</small></b></div>` +
+    `<div><span>Stormwater runoff</span><b>${fmt(dRunoffPct)} %</b></div>` +
+    `<div><span>PM2.5</span><b>${fmt(avgPM)} % <small>(peak ${fmt(pPM * 100)})</small></b></div>` +
+    `<div><span>Humidity</span><b>${fmt(avgRH)} pts <small>(peak ${fmt(pRH)})</small></b></div>` +
+    (solarKwhYr > 0 ? `<div><span>Rooftop solar</span><b>${solarKwhYr.toLocaleString()} kWh/yr</b></div>` : '') +
+    (co2Text ? `<div><span>CO₂ avoided</span>${co2Text}</div>` : '');
 }
 
 /* ---------------- refresh pipeline ---------------- */
@@ -374,13 +560,22 @@ async function loadLive() {
   try {
     const [w, a] = await Promise.all([
       fetch(`https://api.open-meteo.com/v1/forecast?latitude=${lat}&longitude=${lon}&current=temperature_2m,relative_humidity_2m,precipitation`).then(r => r.json()),
-      fetch(`https://air-quality-api.open-meteo.com/v1/air-quality?latitude=${lat}&longitude=${lon}&current=pm2_5`).then(r => r.json())
+      fetch(`https://air-quality-api.open-meteo.com/v1/air-quality?latitude=${lat}&longitude=${lon}&current=pm2_5,pm10,nitrogen_dioxide`).then(r => r.json())
     ]);
-    const c = w.current || {};
+    const c = w.current || {}, aq = a.current || {};
     if (c.temperature_2m != null) SCEN.live.T = c.temperature_2m;
     if (c.relative_humidity_2m != null) SCEN.live.rh = c.relative_humidity_2m;
     if (c.precipitation != null) SCEN.live.precip = c.precipitation;
-    if (a.current && a.current.pm2_5 != null) SCEN.live.pm = a.current.pm2_5;
+    if (aq.pm2_5 != null) SCEN.live.pm = aq.pm2_5;
+    if (aq.pm10 != null) SCEN.live.pm10 = aq.pm10;
+    if (aq.nitrogen_dioxide != null) SCEN.live.no2 = aq.nitrogen_dioxide;
+
+    SCEN.carfree.T = SCEN.live.T;
+    SCEN.carfree.rh = SCEN.live.rh;
+    SCEN.carfree.pm = SCEN.live.pm * 0.85; // -15% PM2.5
+    SCEN.carfree.pm10 = (SCEN.live.pm10 || 15) * 0.50; // -50% PM10
+    SCEN.carfree.no2 = (SCEN.live.no2 || 25) * 0.16; // -84% NO2
+
     const opt = document.querySelector('#cl-scen option[value="live"]');
     if (opt) opt.textContent = `Live now (${SCEN.live.T.toFixed(1)} °C)`;
   } catch (err) { console.warn('Open-Meteo unavailable, using defaults', err); }
@@ -445,13 +640,15 @@ function buildUI() {
     <div class="cl-head"><b>Climate layers</b><button id="cl-min" title="Collapse">–</button></div>
     <div id="cl-body">
       <div class="cl-modes">
-        <button data-m="off">Off</button><button data-m="temp" class="on">🌡 Temp</button>
-        <button data-m="pm">🏭 Pollution</button><button data-m="rh">💧 Humidity</button>
+        <button data-m="off">Off</button><button data-m="temp" class="on">🌡 Air Temp</button>
+        <button data-m="pet">☀️ Feel (PET)</button><button data-m="pm">🏭 Pollution</button>
+        <button data-m="rh">💧 Humidity</button>
       </div>
       <label class="cl-row">Scenario
         <select id="cl-scen">
           <option value="live">Live now</option><option value="heat">Heatwave 34 °C</option>
           <option value="snow">Winter storm −2 °C</option><option value="rain">Heavy rain 11 °C</option>
+          <option value="carfree">Car-free day</option>
         </select>
       </label>
       <div id="cl-ref" style="display:none;margin:-2px 0 6px;color:#475569;font-size:11px"></div>
@@ -493,9 +690,26 @@ function buildUI() {
     const k = idx(e.lngLat.lng, e.lngLat.lat);
     if (k < 0) { tip.style.display = 'none'; return; }
     const dT = F.scn.T[k] - F.base.T[k];
-    tip.innerHTML = `<b>${F.scn.T[k].toFixed(1)} °C</b>` +
-      (Math.abs(dT) > 0.02 ? ` <span>(${fmt(dT)} °C from your edits)</span>` : '') +
-      `<br>PM2.5 ${F.scn.PM[k].toFixed(1)} µg/m³ · RH ${Math.round(F.scn.RH[k])} %`;
+    const dPET = F.scn.PET[k] - F.base.PET[k];
+    const dPM = F.scn.PM[k] - F.base.PM[k];
+
+    if (mode === 'pet') {
+      tip.innerHTML = `<b>${F.scn.PET[k].toFixed(1)} °C feel (PET)</b>` +
+        (Math.abs(dPET) > 0.1 ? ` <span>(${fmt(dPET)} °C feel from edits)</span>` : '') +
+        `<br>Air ${F.scn.T[k].toFixed(1)} °C${Math.abs(dT) > 0.02 ? ` (${fmt(dT)}°)` : ''} · PM2.5 ${F.scn.PM[k].toFixed(1)} µg/m³ · RH ${Math.round(F.scn.RH[k])} %`;
+    } else if (mode === 'temp') {
+      tip.innerHTML = `<b>${F.scn.T[k].toFixed(1)} °C</b>` +
+        (Math.abs(dT) > 0.02 ? ` <span>(${fmt(dT)} °C from edits)</span>` : '') +
+        `<br>Feel ${F.scn.PET[k].toFixed(1)} °C PET${Math.abs(dPET) > 0.1 ? ` <span style="color:#a5d8ff">(${fmt(dPET)}°)</span>` : ''}` +
+        `<br>PM2.5 ${F.scn.PM[k].toFixed(1)} µg/m³ · RH ${Math.round(F.scn.RH[k])} %`;
+    } else if (mode === 'pm') {
+      tip.innerHTML = `<b>PM2.5 ${F.scn.PM[k].toFixed(1)} µg/m³</b>` +
+        (Math.abs(dPM) > 0.1 ? ` <span>(${fmt(dPM)} µg/m³ from edits)</span>` : '') +
+        `<br>Air ${F.scn.T[k].toFixed(1)} °C · Feel ${F.scn.PET[k].toFixed(1)} °C PET · RH ${Math.round(F.scn.RH[k])} %`;
+    } else {
+      tip.innerHTML = `<b>RH ${Math.round(F.scn.RH[k])} %</b>` +
+        `<br>Air ${F.scn.T[k].toFixed(1)} °C · Feel ${F.scn.PET[k].toFixed(1)} °C PET · PM2.5 ${F.scn.PM[k].toFixed(1)} µg/m³`;
+    }
     tip.style.left = e.originalEvent.clientX + 14 + 'px';
     tip.style.top = e.originalEvent.clientY + 14 + 'px';
     tip.style.display = 'block';
@@ -519,7 +733,7 @@ async function init() {
   map.on('moveend', () => {
     if (!g) return;
     const c = map.getCenter();
-    if (Math.hypot((c.lng - g.lng) * g.mLng, (c.lat - g.lat) * MLAT) > HALF * 0.4) schedule(true, 400);
+    if (Math.hypot((c.lng - g.lng) * g.mLng, (c.lat - g.lat) * MLAT) > HALF * 0.22) schedule(true, 220);
     else updateMask();
   });
   let last = 0;

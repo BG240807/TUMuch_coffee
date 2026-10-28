@@ -5,6 +5,33 @@ const DATA_SOURCES = [
   'Terrain: AWS Terrain Tiles',
 ];
 
+const SCIENTIFIC_SOURCES = [
+  {
+    title: 'German Heatwave Canopy Cooling',
+    desc: 'Empirical microclimate studies: −0.8 °C ambient air cooling per +10% canopy cover (capped at −1.5 °C for +30% canopy cover); −4 to −11 °C PET (physiologically equivalent temperature / shade feel) reduction via solar shielding and evapotranspirative cooling.',
+  },
+  {
+    title: 'SuDS Stormwater Retention',
+    desc: 'Sustainable Drainage Systems (SuDS) hydrology: 30–50% stormwater runoff reduction through unsealed green infiltration areas vs. ~95% runoff on impervious concrete surfaces.',
+  },
+  {
+    title: 'EU Air Quality Directive 2024/2881',
+    desc: 'Legally binding targets effective 2030: PM2.5 10 µg/m³ · PM10 20 µg/m³ · NO₂ 20 µg/m³ (annual mean thresholds).',
+  },
+  {
+    title: 'WHO 2021 Global Air Quality Guidelines',
+    desc: 'Health protection guidelines: PM2.5 5 µg/m³ · PM10 15 µg/m³ · NO₂ 10 µg/m³.',
+  },
+  {
+    title: 'LUBW (2023) Heilbronn Baseline',
+    desc: 'Landesanstalt für Umwelt Baden-Württemberg official monitoring station Weinsberger Str.: NO₂ 29 µg/m³ · PM10 15 µg/m³ annual baseline.',
+  },
+  {
+    title: 'AerChemMIP SSP2-4.5 Climate Projections',
+    desc: 'CMIP6 HighResMIP multi-model aerosol-chemistry ensemble (Clayton et al. 2024 via Open-Meteo), bias-corrected against measured 2021–2025 Heilbronn weather data.',
+  },
+];
+
 function createAboutCard() {
   const btn = document.createElement('button');
   btn.type = 'button';
@@ -19,10 +46,13 @@ function createAboutCard() {
   card.setAttribute('role', 'dialog');
   card.setAttribute('aria-label', 'About this map');
   card.hidden = true;
+  card.style.maxWidth = '340px';
+  card.style.maxHeight = '80vh';
+  card.style.overflowY = 'auto';
 
   const title = document.createElement('h3');
   title.className = 'about-card-title';
-  title.textContent = 'About this map';
+  title.textContent = 'Data Sources';
 
   const list = document.createElement('ul');
   list.className = 'about-card-list';
@@ -33,7 +63,22 @@ function createAboutCard() {
     list.appendChild(li);
   }
 
-  card.append(title, list);
+  const sciTitle = document.createElement('h3');
+  sciTitle.className = 'about-card-title';
+  sciTitle.style.marginTop = '12px';
+  sciTitle.textContent = 'Scientific Model & Sources';
+
+  const sciList = document.createElement('ul');
+  sciList.className = 'about-card-list';
+
+  for (const item of SCIENTIFIC_SOURCES) {
+    const li = document.createElement('li');
+    li.style.marginBottom = '6px';
+    li.innerHTML = `<strong>${item.title}:</strong> ${item.desc}`;
+    sciList.appendChild(li);
+  }
+
+  card.append(title, list, sciTitle, sciList);
 
   const setOpen = (open) => {
     card.hidden = !open;

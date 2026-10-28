@@ -8,7 +8,8 @@ export function addComparisonCard({ map, scene, placed, deleted }) {
   card.id = 'comparison-card';
   card.setAttribute('aria-label', 'Scenario comparison');
   card.innerHTML = `
-    <h3>Scenario comparison</h3>
+    <div class="cc-head"><h3>Scenario comparison</h3><button type="button" class="cc-min" title="Collapse">–</button></div>
+    <div class="cc-body">
     <div class="cc-toggle" role="group" aria-label="Map view">
       <button type="button" aria-pressed="false" disabled>Original</button>
       <button type="button" aria-pressed="true" disabled>Proposal</button>
@@ -24,14 +25,20 @@ export function addComparisonCard({ map, scene, placed, deleted }) {
       </tbody>
     </table>
     <p>Canopy: sum of circular tree crowns, including overlaps. Not city-wide coverage or a climate prediction.</p>
-    <p class="cc-status" role="status">Viewing proposal · editing enabled</p>`;
+    <p class="cc-status" role="status">Viewing proposal · editing enabled</p>
+    </div>`;
   document.body.appendChild(card);
   const toolbar = document.getElementById('ui');
   new ResizeObserver(() => {
     card.style.top = `${toolbar.offsetTop + toolbar.offsetHeight + 10}px`;
   }).observe(toolbar);
 
-  const [original, proposal] = card.querySelectorAll('button');
+  const minBtn = card.querySelector('.cc-min');
+  minBtn.addEventListener('click', () => {
+    const collapsed = card.classList.toggle('collapsed');
+    minBtn.textContent = collapsed ? '+' : '–';
+  });
+  const [original, proposal] = card.querySelectorAll('.cc-toggle button');
   const cells = card.querySelectorAll('tbody tr td:last-child');
   const tools = document.querySelectorAll('#ui button');
   const status = card.querySelector('.cc-status');
@@ -67,8 +74,8 @@ export function addComparisonCard({ map, scene, placed, deleted }) {
       previousTool = document.querySelector('#ui button.active');
       document.getElementById('btnNav').click();
     }
-    tools.forEach(button => { button.disabled = show && button.id !== 'btnNav'; });
-    if (!show) previousTool.click();
+    document.querySelectorAll('#ui button').forEach(button => { button.disabled = show && button.id !== 'btnNav'; });
+    if (!show && previousTool) previousTool.click();
     for (const id of ['buildings-3d', 'buildings-own']) {
       map.setLayoutProperty(id, 'visibility', show ? 'none' : 'visible');
     }

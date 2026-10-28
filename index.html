@@ -39,6 +39,10 @@
       background: #1f6f43; color: #fff;
       box-shadow: 0 1px 4px rgba(15, 23, 42, 0.2);
     }
+    #ui .ui-sep {
+      width: 1px; height: 18px; margin: 0 3px;
+      background: rgba(15, 23, 42, 0.12); flex: none;
+    }
     #count {
       position: absolute; bottom: 12px; left: 12px; z-index: 2;
       background: rgba(255, 255, 255, 0.88);
@@ -50,6 +54,11 @@
       color: #475569; font-variant-numeric: tabular-nums;
       pointer-events: none;
     }
+    @media (max-width: 1150px), (max-height: 760px) {
+      #ui { max-width: calc(100vw - 265px); padding: 3px; gap: 2px; }
+      #ui button { padding: 4px 6.5px; font-size: 11px; }
+      #count { font-size: 10.5px; padding: 4px 9px; }
+    }
     @media (max-width: 760px) {
       #ui { max-width: calc(100vw - 64px); }
     }
@@ -58,15 +67,16 @@
 <body>
 <div id="map"></div>
 <div id="ui">
+  <button id="btnNav">✋ Navigate</button>
+  <button id="btnSelect">👆 Select</button>
+  <button id="btnInspect">ℹ Inspect tree</button>
+  <span class="ui-sep" aria-hidden="true"></span>
   <button id="btnTree" class="active">🌳 Place tree</button>
   <button id="btnBuilding">🏢 Place building</button>
-  <button id="btnUndo">↩ Undo</button>
-  <button id="btnOsm">Load real trees</button>
-  <button id="btnNav">✋ Navigate only</button>
-  <button id="btnInspect">ℹ Inspect tree</button>
-  <button id="btnSelect">👆 Select</button>
-  <button id="btnDelete">🗑 Delete selected</button>
-  <button id="btnRestore">♻ Restore deleted</button>
+  <span class="ui-sep" aria-hidden="true"></span>
+  <button id="btnUndo" title="Undo last placed item">↩ Undo</button>
+  <button id="btnDelete" title="Delete selected (Del)">🗑 Delete</button>
+  <button id="btnRestore" title="Restore last deleted">♻ Restore</button>
 </div>
 <div id="count"></div>
 <script type="module" src="metrics-card.js"></script>
@@ -79,6 +89,9 @@
 
 <script type="module">
 import * as THREE from 'three';
+
+window.__app = window.__app || {};
+window.__app.buildingSpec = window.__app.buildingSpec || { w: 16, d: 12, floors: 4, rot: 0 };
 
 import { addCadastre } from './cadastre.js';
 let cadastre = null;
@@ -147,16 +160,18 @@ function makeTree(lng, lat, s = 0.8 + Math.random() * 0.8, ci = Math.floor(Math.
   return g;
 }
 
-// ---------- building with procedural windows ----------
+// ---------- building matching MapLibre 3D extrusion style (#e8e4dc) ----------
 function windowTexture() {
   const c = document.createElement('canvas');
   c.width = c.height = 64;
   const x = c.getContext('2d');
-  x.fillStyle = '#d8d2c6'; x.fillRect(0, 0, 64, 64);   // wall
-  x.fillStyle = '#5b7a99'; x.fillRect(14, 12, 36, 34); // glass
-  x.fillStyle = '#eee';    x.fillRect(14, 12, 36, 3);  // frame top
-  x.fillRect(30, 12, 4, 34);                           // frame middle
-  x.fillStyle = '#b9b2a4'; x.fillRect(10, 46, 44, 4);  // sill
+  // Clean solid sandstone wall matching MapLibre fill-extrusion (#e8e4dc) with subtle vertical shading
+  const g = x.createLinearGradient(0, 0, 0, 64);
+  g.addColorStop(0, '#ece8e0');
+  g.addColorStop(0.96, '#e5e0d7');
+  g.addColorStop(1, '#dcd6cc');
+  x.fillStyle = g;
+  x.fillRect(0, 0, 64, 64);
   const t = new THREE.CanvasTexture(c);
   t.wrapS = t.wrapT = THREE.RepeatWrapping;
   t.colorSpace = THREE.SRGBColorSpace;
@@ -164,27 +179,46 @@ function windowTexture() {
 }
 const baseWinTex = windowTexture();
 
-function makeBuilding(lng, lat, w = 14, d = 10, floors = 5) {
+function makeBuilding(lng, lat, opts = {}) {
+  const spec = window.__app?.buildingSpec || { w: 16, d: 12, floors: 4, rot: 0 };
+  let w = opts.w ?? spec.w ?? 16;
+  let d = opts.d ?? spec.d ?? 12;
+  let floors = opts.floors ?? spec.floors ?? 4;
+  let rot = opts.rot ?? spec.rot ?? 0;
+  if (typeof opts === 'number') {
+    w = opts;
+    if (typeof arguments[3] === 'number') d = arguments[3];
+    if (typeof arguments[4] === 'number') floors = arguments[4];
+  }
   const h = floors * 3.2;
   const side = (repeatX) => {
     const t = baseWinTex.clone();
     t.needsUpdate = true;
-    t.repeat.set(Math.max(1, Math.round(repeatX / 3.5)), floors);
+    t.repeat.set(Math.max(1, Math.round(repeatX / 4)), floors);
     return new THREE.MeshLambertMaterial({ map: t });
   };
-  const roof = new THREE.MeshLambertMaterial({ color: 0x8a4b3b });
+  const roof = new THREE.MeshLambertMaterial({ color: 0xefece6 });
+  const bottom = new THREE.MeshLambertMaterial({ color: 0xe8e4dc });
   // order: +x, -x, +y, -y, +z, -z
-  const mats = [side(d), side(d), roof, roof, side(w), side(w)];
+  const mats = [side(d), side(d), roof, bottom, side(w), side(w)];
   const mesh = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), mats);
+  mesh.rotation.y = (rot * Math.PI) / 180;
   const p = toScene(lng, lat, groundAt(lng, lat));
   mesh.position.set(p.x, p.y + h / 2, p.z);
-  mesh.userData = { lift: h / 2, hx: w / 2, hz: d / 2, y0: 0, y1: h };
+  mesh.userData = {
+    w, d, floors, rot,
+    lift: h / 2,
+    hx: w / 2, hz: d / 2,
+    y0: 0, y1: h,
+    area: w * d
+  };
   return mesh;
 }
 
 // Create, add and register an object we placed ourselves. `saved` carries tree params on restore.
 function addObject(type, lng, lat, saved = {}) {
-  const obj = type === 'tree' ? makeTree(lng, lat, saved.s, saved.ci) : makeBuilding(lng, lat);
+  const bOpts = type === 'building' ? { ...window.__app?.buildingSpec, ...saved } : saved;
+  const obj = type === 'tree' ? makeTree(lng, lat, saved.s, saved.ci) : makeBuilding(lng, lat, bOpts);
   scene.add(obj);
   placed.push({ obj, type, lng, lat });
   return obj;
@@ -497,8 +531,15 @@ const _box = new THREE.Box3();
 const _hit = new THREE.Vector3();
 function placedBox(obj, box) {
   const u = obj.userData, ground = obj.position.y - (u.lift || 0);
-  box.min.set(obj.position.x - u.hx, ground + u.y0, obj.position.z - u.hz);
-  box.max.set(obj.position.x + u.hx, ground + u.y1, obj.position.z + u.hz);
+  let hx = u.hx, hz = u.hz;
+  if (u.rot) {
+    const rad = Math.abs((u.rot * Math.PI) / 180);
+    const cos = Math.abs(Math.cos(rad)), sin = Math.abs(Math.sin(rad));
+    hx = (u.w * cos + u.d * sin) / 2;
+    hz = (u.w * sin + u.d * cos) / 2;
+  }
+  box.min.set(obj.position.x - hx, ground + u.y0, obj.position.z - hz);
+  box.max.set(obj.position.x + hx, ground + u.y1, obj.position.z + hz);
   return box;
 }
 
@@ -629,7 +670,19 @@ function deleteSelected() {
   for (const rec of [...pl]) {
     scene.remove(rec.obj);
     placed.splice(placed.indexOf(rec), 1);
-    history.push(tag({ kind: 'placed', type: rec.type, lng: rec.lng, lat: rec.lat, s: rec.obj.userData.s, ci: rec.obj.userData.ci }));
+    const u = rec.obj.userData || {};
+    history.push(tag({
+      kind: 'placed',
+      type: rec.type,
+      lng: rec.lng,
+      lat: rec.lat,
+      s: u.s,
+      ci: u.ci,
+      w: u.w,
+      d: u.d,
+      floors: u.floors,
+      rot: u.rot
+    }));
   }
   selected = null;
   if (bs.length) refreshBuildings(); else refreshSelection();
@@ -664,7 +717,17 @@ function saveSession() {
   window.dispatchEvent(new Event('scene-changed'));
   try {
     sessionStorage.setItem(STORE_KEY, JSON.stringify({
-      placed: placed.map(p => ({ type: p.type, lng: p.lng, lat: p.lat, s: p.obj.userData.s, ci: p.obj.userData.ci })),
+      placed: placed.map(p => ({
+        type: p.type,
+        lng: p.lng,
+        lat: p.lat,
+        s: p.obj.userData?.s,
+        ci: p.obj.userData?.ci,
+        w: p.obj.userData?.w,
+        d: p.obj.userData?.d,
+        floors: p.obj.userData?.floors,
+        rot: p.obj.userData?.rot
+      })),
       history
     }));
   } catch (err) { console.warn('Could not save session', err); }
@@ -891,27 +954,22 @@ document.addEventListener('keydown', (e) => {
   }
 });
 
-// Real trees from OpenStreetMap (free Overpass API), capped to keep it smooth
-btnOsm.onclick = async () => {
-  btnOsm.textContent = 'Loading...';
-  const c = map.getCenter();
-  const d = 0.004; // ~400 m box around the current view center
-  const q = `[out:json];node["natural"="tree"](${c.lat - d},${c.lng - d},${c.lat + d},${c.lng + d});out 1500;`;
-  try {
-    const res = await fetch('https://overpass-api.de/api/interpreter', {
-      method: 'POST', body: 'data=' + encodeURIComponent(q)
-    });
-    const data = await res.json();
-    data.elements.forEach(n => addObject('tree', n.lon, n.lat));
-    updateCount();
-    saveSession();
-    btnOsm.textContent = `Loaded ${data.elements.length} trees`;
-  } catch (err) {
-    console.error(err);
-    btnOsm.textContent = 'Failed, try again';
-  }
+window.__app = {
+  buildingSpec: window.__app?.buildingSpec || { w: 16, d: 12, floors: 4, rot: 0 },
+  map,
+  scene,
+  placed,
+  deleted,
+  buildings,
+  isDeleted,
+  refreshBuildings,
+  addObject,
+  updateCount,
+  saveSession,
+  toScene,
+  groundAt,
+  ready: false
 };
-window.__app = { map, scene, placed, deleted, buildings, isDeleted, refreshBuildings, addObject, updateCount, saveSession, toScene, groundAt, ready: false };
 updateCount();
 import { addComparisonCard } from './comparison-card.js'; addComparisonCard({ map, scene, placed, deleted });
 </script>

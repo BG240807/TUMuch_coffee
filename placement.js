@@ -11,7 +11,12 @@ import * as THREE from 'three';
 const MLAT = 111320;                       // metres per degree latitude
 const TREE_GAP = 4;                        // m between new trees
 const CADASTRE_GAP = 3;                    // m to an existing (cadastre) tree
-const BUILDING = { w: 14, d: 10 };         // footprint of a placed building (matches makeBuilding in index.html)
+const BUILDING = { w: 16, d: 12, floors: 4, rot: 0 }; // default building spec
+const getBuildingSpec = () => {
+  if (!window.__app) window.__app = {};
+  if (!window.__app.buildingSpec) window.__app.buildingSpec = { ...BUILDING };
+  return window.__app.buildingSpec;
+};
 const AREA_SPACING = 9;                    // m between trees in a green area
 const AREA_MAX_TREES = 600;
 const AREA_MAX_M2 = 30000;                 // largest space the wand selects
@@ -186,9 +191,16 @@ function check(type, pt) {
     return null;
   }
   if (type === 'building') {
-    const hw = BUILDING.w / 2, hd = BUILDING.d / 2;
-    const pts = [[0, 0], [-hw, -hd], [hw, -hd], [hw, hd], [-hw, hd], [0, -hd], [0, hd], [-hw, 0], [hw, 0]]
-      .map(([dx, dy]) => [p[0] + dx, p[1] + dy]);
+    const spec = getBuildingSpec();
+    const w = spec.w || 16, d = spec.d || 12, rot = spec.rot || 0;
+    const rad = (rot * Math.PI) / 180;
+    const cos = Math.cos(rad), sin = Math.sin(rad);
+    const hw = w / 2, hd = d / 2;
+    const localPts = [[0, 0], [-hw, -hd], [hw, -hd], [hw, hd], [-hw, hd], [0, -hd], [0, hd], [-hw, 0], [hw, 0]];
+    const pts = localPts.map(([dx, dy]) => [
+      p[0] + dx * cos - dy * sin,
+      p[1] + dx * sin + dy * cos
+    ]);
     for (const q of pts) {
       if (areaAt(q, 'water')) return 'in water';
       const l = lineAt(q, 1);
@@ -196,8 +208,8 @@ function check(type, pt) {
       if (houseAt(q)) return 'overlaps a building';
       if (areaAt(q, 'park') || areaAt(q, 'forest')) return 'in a park or forest';
     }
-    if (placedNear(p, 'building', Math.hypot(BUILDING.w, BUILDING.d) + 2)) return 'too close to a new building';
-    if (placedNear(p, 'tree', 9)) return 'on a new tree';
+    if (placedNear(p, 'building', Math.hypot(w, d) * 0.9 + 2)) return 'too close to a new building';
+    if (placedNear(p, 'tree', Math.min(w, d) / 2 + 2)) return 'on a new tree';
     return null;
   }
   return null;
@@ -379,8 +391,16 @@ function setTip(text, ok, point) {
 }
 function ghostRing(type, p) {
   if (type === 'tree') return Array.from({ length: 21 }, (_, i) => [p[0] + 3 * Math.cos((i / 20) * 2 * Math.PI), p[1] + 3 * Math.sin((i / 20) * 2 * Math.PI)]);
-  const hw = BUILDING.w / 2, hd = BUILDING.d / 2;
-  return [[-hw, -hd], [hw, -hd], [hw, hd], [-hw, hd], [-hw, -hd]].map(([dx, dy]) => [p[0] + dx, p[1] + dy]);
+  const spec = getBuildingSpec();
+  const w = spec.w || 16, d = spec.d || 12, rot = spec.rot || 0;
+  const hw = w / 2, hd = d / 2;
+  const rad = (rot * Math.PI) / 180;
+  const cos = Math.cos(rad), sin = Math.sin(rad);
+  const corners = [[-hw, -hd], [hw, -hd], [hw, hd], [-hw, hd], [-hw, -hd]];
+  return corners.map(([dx, dy]) => [
+    p[0] + dx * cos - dy * sin,
+    p[1] + dx * sin + dy * cos
+  ]);
 }
 // a see-through 3D tree or building at the cursor (same shapes as in index.html), green or red
 let ghost3d = null;
@@ -390,7 +410,9 @@ function makeGhost3d() {
   tree.add(new THREE.Mesh(new THREE.CylinderGeometry(0.25, 0.4, 4, 6).translate(0, 2, 0), mat),
     new THREE.Mesh(new THREE.IcosahedronGeometry(3, 1).scale(1, 1.2, 1).translate(0, 6, 0), mat));
   tree.scale.setScalar(1.2);
-  const building = new THREE.Mesh(new THREE.BoxGeometry(BUILDING.w, 16, BUILDING.d).translate(0, 8, 0), mat);
+  const bGeom = new THREE.BoxGeometry(1, 1, 1);
+  bGeom.translate(0, 0.5, 0);
+  const building = new THREE.Mesh(bGeom, mat);
   tree.visible = building.visible = false;
   app.scene.add(tree, building);
   return { tree, building, mat };
@@ -400,6 +422,13 @@ function showGhost(type, pt, reason, point) {
     geometry: { type: 'Polygon', coordinates: [ghostRing(type, toM(pt)).map(toLL)] } });
   ghost3d ??= makeGhost3d();
   const obj = ghost3d[type], other = ghost3d[type === 'tree' ? 'building' : 'tree'];
+  if (type === 'building') {
+    const spec = getBuildingSpec();
+    const w = spec.w || 16, d = spec.d || 12, floors = spec.floors || 4, rot = spec.rot || 0;
+    const h = floors * 3.2;
+    obj.scale.set(w, h, d);
+    obj.rotation.y = (rot * Math.PI) / 180;
+  }
   obj.position.copy(app.toScene(pt[0], pt[1], app.groundAt(pt[0], pt[1])));
   obj.visible = true;
   other.visible = false;
@@ -411,10 +440,52 @@ function hideGhost() {
   map.getSource('placement-ghost')?.setData(EMPTY);
   if (ghost3d?.tree.visible || ghost3d?.building.visible) { ghost3d.tree.visible = ghost3d.building.visible = false; map.triggerRepaint(); }
   setTip(null);
+  lastCursorLL = null;
+  lastCursorPoint = null;
 }
 const activeTool = () => document.querySelector('#ui button.active')?.id;
 const placeType = () => ({ btnTree: 'tree', btnBuilding: 'building' })[activeTool()];
 function say(html) { info.innerHTML = html; info.style.display = html ? 'block' : 'none'; }
+
+// ---------- Building interactive controls pill & live adjustment ----------
+let lastCursorLL = null;
+let lastCursorPoint = null;
+
+function updateBuildingPill() {
+  if (placeType() !== 'building' || tool || brush) return;
+  const spec = getBuildingSpec();
+  const html = `🏢 <b>${spec.w}×${spec.d} m · ${spec.floors} fl · ${spec.rot}°</b> ` +
+    `<button id="bld-rot" title="Rotate 15° (shortcut: R or [ / ])">↻ Rotate (R)</button> ` +
+    `<span style="margin-left:3px;font-size:11px;color:#64748b">W</span><button id="bld-w-dec" title="Narrower">−</button><button id="bld-w-inc" title="Wider">+</button> ` +
+    `<span style="margin-left:3px;font-size:11px;color:#64748b">D</span><button id="bld-d-dec" title="Shorter">−</button><button id="bld-d-inc" title="Deeper">+</button> ` +
+    `<span style="margin-left:3px;font-size:11px;color:#64748b">Floors</span><button id="bld-fl-dec" title="Fewer floors (−)">−</button><button id="bld-fl-inc" title="More floors (+)">+</button>`;
+  say(html);
+
+  document.getElementById('bld-rot')?.addEventListener('click', () => adjustBuilding({ rot: 15 }));
+  document.getElementById('bld-w-dec')?.addEventListener('click', () => adjustBuilding({ dw: -2 }));
+  document.getElementById('bld-w-inc')?.addEventListener('click', () => adjustBuilding({ dw: 2 }));
+  document.getElementById('bld-d-dec')?.addEventListener('click', () => adjustBuilding({ dd: -2 }));
+  document.getElementById('bld-d-inc')?.addEventListener('click', () => adjustBuilding({ dd: 2 }));
+  document.getElementById('bld-fl-dec')?.addEventListener('click', () => adjustBuilding({ dfl: -1 }));
+  document.getElementById('bld-fl-inc')?.addEventListener('click', () => adjustBuilding({ dfl: 1 }));
+}
+
+function adjustBuilding({ rot = 0, dw = 0, dd = 0, dfl = 0 }) {
+  const spec = getBuildingSpec();
+  if (rot) spec.rot = ((spec.rot + rot) % 360 + 360) % 360;
+  if (dw) spec.w = Math.max(8, Math.min(40, spec.w + dw));
+  if (dd) spec.d = Math.max(8, Math.min(40, spec.d + dd));
+  if (dfl) spec.floors = Math.max(1, Math.min(15, spec.floors + dfl));
+  if (window.__app) window.__app.buildingSpec = spec;
+  updateBuildingPill();
+  refreshGhostBuilding();
+}
+
+function refreshGhostBuilding() {
+  if (placeType() === 'building' && lastCursorLL && lastCursorPoint) {
+    showGhost('building', lastCursorLL, check('building', lastCursorLL), lastCursorPoint);
+  }
+}
 
 // ---------- green area tool ----------
 let tool = null;      // null | 'wand' | 'draw'
@@ -485,6 +556,7 @@ function stopTool() {
   // always leave a normal tool active (the scenario comparison restores "the previous tool")
   if (!document.querySelector('#ui button.active')) document.getElementById('btnNav').click();
   drawState();
+  if (placeType() === 'building') updateBuildingPill(); else say('');
 }
 // ask before changing anything; offers keeping the buildings when there are any
 function propose(ring, label) {
@@ -644,9 +716,9 @@ const BRUSH = { min: 5, max: 40, gap: 7, tries: 6 }; // m; gap between brushed t
 let brush = null;          // { r, painting, stroke: [placed entries], last, timer } while the brush is on
 const strokes = [];        // undo stack, one entry per stroke
 let brushBtn;
-const brushHelp = () => `<b>Tree brush</b>: hold the mouse down and paint. Size ${brush.r} m ` +
-  '<button id="pl-smaller">−</button><button id="pl-bigger">+</button> (or [ and ]). ' +
-  `${strokes.length ? '<button id="pl-undo-stroke">Undo stroke</button>' : ''}<button id="pl-brush-done">Done</button>`;
+const brushHelp = () => `🖌️ <b>${brush.r} m</b>` +
+  '<button id="pl-smaller" title="Smaller ([)">−</button><button id="pl-bigger" title="Larger (])">+</button>' +
+  `${strokes.length ? '<button id="pl-undo-stroke" title="Undo last stroke">↩</button>' : ''}<button id="pl-brush-done" title="Done">✕</button>`;
 function sayBrush() {
   say(brushHelp());
   document.getElementById('pl-smaller').onclick = () => resizeBrush(-5);
@@ -684,7 +756,7 @@ function stopBrush() {
   brushBtn.classList.remove('active');
   map.getSource('brush-cursor').setData(EMPTY);
   if (!document.querySelector('#ui button.active')) document.getElementById('btnNav').click();
-  say('');
+  if (placeType() === 'building') updateBuildingPill(); else say('');
 }
 function paintAt(p) {
   for (let i = 0; i < BRUSH.tries; i++) {
@@ -740,6 +812,8 @@ function undoStroke() {
 function onMove(ev) {
   const pt = [ev.lngLat.lng, ev.lngLat.lat];
   cursorM = toM(pt);
+  lastCursorLL = pt;
+  lastCursorPoint = ev.point;
   if (brush) {
     drawBrush(cursorM);
     if (brush.painting) paintTo(cursorM);
@@ -769,6 +843,9 @@ function onMove(ev) {
   }
   const type = placeType();
   if (!type) return hideGhost();
+  if (type === 'building' && !tool && !brush && (!info.innerHTML || info.style.display === 'none')) {
+    updateBuildingPill();
+  }
   showGhost(type, pt, check(type, pt), ev.point);
 }
 function onClick(e) {
@@ -792,10 +869,12 @@ const CSS = `
 #pl-tip{position:fixed;z-index:5;pointer-events:none;display:none;padding:4px 8px;border-radius:6px;
  font:12px/1.3 system-ui,-apple-system,sans-serif;color:#fff;box-shadow:0 1px 4px rgba(0,0,0,.25);white-space:nowrap}
 #pl-tip.ok{background:rgba(46,125,50,.92)} #pl-tip.no{background:rgba(183,28,28,.92)}
-#pl-info{position:absolute;left:50%;bottom:170px;transform:translateX(-50%);z-index:3;display:none;max-width:min(600px,calc(100vw - 40px));
- padding:8px 12px;border-radius:10px;background:rgba(255,255,255,.94);box-shadow:0 2px 10px rgba(0,0,0,.18);
- font:12px/1.5 system-ui,-apple-system,sans-serif;color:#1f2933}
-#pl-info button{margin:2px 0 2px 6px;font:12px system-ui,sans-serif;border:1px solid rgba(0,0,0,.2);background:#fff;border-radius:6px;padding:2px 10px;cursor:pointer}
+#pl-info{position:absolute;left:50%;top:56px;transform:translateX(-50%);z-index:3;display:none;max-width:min(680px,calc(100vw - 40px));
+ padding:5px 10px;border-radius:999px;background:rgba(255,255,255,.92);backdrop-filter:blur(10px);-webkit-backdrop-filter:blur(10px);
+ border:1px solid rgba(15,23,42,.1);box-shadow:0 4px 16px rgba(15,23,42,.14);
+ font:500 12px/1.4 system-ui,-apple-system,sans-serif;color:#1f2933;white-space:nowrap}
+#pl-info button{margin:0 0 0 5px;font:500 11.5px system-ui,sans-serif;border:1px solid rgba(15,23,42,.16);background:#fff;border-radius:999px;padding:2px 8px;cursor:pointer}
+#pl-info button:hover{background:rgba(15,23,42,.06)}
 #pl-info #pl-ok{background:#2e7d32;border-color:#2e7d32;color:#fff}
 .pl-float{position:fixed;z-index:6;pointer-events:none;transform:translate(-50%,-50%);padding:6px 12px;border-radius:14px;
  background:rgba(46,125,50,.95);color:#fff;font:600 14px system-ui,-apple-system,sans-serif;box-shadow:0 2px 10px rgba(0,0,0,.25);
@@ -816,21 +895,31 @@ function init() {
   info = Object.assign(document.createElement('div'), { id: 'pl-info' });
   document.body.append(tip, info);
 
-  btn = Object.assign(document.createElement('button'), { id: 'btnGreenArea', textContent: '🌳 Green area',
-    title: 'Turn a square, lawn or block green: buildings inside are demolished and trees planted' });
-  document.getElementById('btnBuilding').after(btn);
-  btn.addEventListener('click', () => (tool ? (stopTool(), say('')) : startTool()));
   brushBtn = Object.assign(document.createElement('button'), { id: 'btnTreeBrush', textContent: '🖌️ Tree brush',
     title: 'Hold the mouse down and paint trees' });
-  btn.after(brushBtn);
+  document.getElementById('btnTree').after(brushBtn);
   brushBtn.addEventListener('click', () => (brush ? stopBrush() : startBrush()));
+  btn = Object.assign(document.createElement('button'), { id: 'btnGreenArea', textContent: '🌳 Green area',
+    title: 'Turn a square, lawn or block green: buildings inside are demolished and trees planted' });
+  brushBtn.after(btn);
+  btn.addEventListener('click', () => (tool ? (stopTool(), say('')) : startTool()));
   // any other tool ends the green area tool / the brush
-  document.getElementById('ui').addEventListener('click', (e) => {
+  document.getElementById('ui')?.addEventListener('click', (e) => {
     const b = e.target.closest('button');
     if (!b) return;
-    if (b !== btn && tool) { stopTool(); say(''); }
-    if (b !== brushBtn && brush) stopBrush();
+    if (b !== btn && tool) { stopTool(); }
+    if (b !== brushBtn && brush) { stopBrush(); }
+    setTimeout(() => {
+      if (placeType() === 'building' && !tool && !brush) {
+        updateBuildingPill();
+        refreshGhostBuilding();
+      } else if (!tool && !brush) {
+        say('');
+      }
+    }, 10);
   });
+  const ui = document.getElementById('ui');
+  if (ui) new ResizeObserver(() => { info.style.top = `${ui.offsetTop + ui.offsetHeight + 8}px`; }).observe(ui);
 
   map.addSource('green-areas', { type: 'geojson', data: EMPTY });
   const colour = ['match', ['get', 'state'], 'bad', '#c62828', 'pending', '#f9a825', '#2e7d32'];
@@ -871,6 +960,7 @@ function init() {
     geo.trees = g;
   }).catch(() => {});
   drawState();
+  if (placeType() === 'building') updateBuildingPill();
 
   // mouse feedback, at most once per frame
   let queued = null;
@@ -891,6 +981,48 @@ function init() {
   });
   window.addEventListener('mouseup', endStroke);
   window.addEventListener('keydown', (e) => {
+    const tag = e.target?.tagName;
+    if (tag === 'INPUT' || tag === 'TEXTAREA' || e.target?.isContentEditable) return;
+    if (e.metaKey || e.ctrlKey || e.altKey) return;
+
+    if (placeType() === 'building' && !tool && !brush) {
+      if (e.key === 'r' || e.key === 'R') {
+        e.preventDefault();
+        adjustBuilding({ rot: e.shiftKey ? -15 : 15 });
+        return;
+      }
+      if (e.key === '[') {
+        e.preventDefault();
+        adjustBuilding({ rot: -15 });
+        return;
+      }
+      if (e.key === ']') {
+        e.preventDefault();
+        adjustBuilding({ rot: 15 });
+        return;
+      }
+      if (e.key === '+' || e.key === '=') {
+        e.preventDefault();
+        adjustBuilding({ dfl: 1 });
+        return;
+      }
+      if (e.key === '-' || e.key === '_') {
+        e.preventDefault();
+        adjustBuilding({ dfl: -1 });
+        return;
+      }
+      if (e.key === 'w' || e.key === 'W') {
+        e.preventDefault();
+        adjustBuilding({ dw: e.shiftKey ? -2 : 2 });
+        return;
+      }
+      if (e.key === 'd' || e.key === 'D') {
+        e.preventDefault();
+        adjustBuilding({ dd: e.shiftKey ? -2 : 2 });
+        return;
+      }
+    }
+
     if (brush) {
       if (e.key === '[') resizeBrush(-5);
       if (e.key === ']') resizeBrush(5);
