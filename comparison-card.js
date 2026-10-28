@@ -76,6 +76,7 @@ export function addComparisonCard({ map, scene, placed, deleted }) {
     original.setAttribute('aria-pressed', String(show));
     proposal.setAttribute('aria-pressed', String(!show));
     status.textContent = show ? 'Viewing original · editing paused' : 'Viewing proposal · editing enabled';
+    window.dispatchEvent(new CustomEvent('view-original', { detail: show })); // climate-layer.js hides edits too
     update();
   }
 

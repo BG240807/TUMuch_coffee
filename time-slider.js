@@ -49,13 +49,21 @@ async function loadMonth(i) {
 
 let wanted = TODAY;
 
+// climate-layer.js listens to this and recolours the map for the chosen month (null = back to live)
+const announce = (m) => window.dispatchEvent(new CustomEvent('climate-month', { detail: m }));
+
 function select(i) {
   wanted = i;
   const atNow = i === TODAY;
   labelEl.textContent = atNow ? 'Now' : label(fromIndex(i));
   nowBtn.disabled = atNow;
-  if (atNow) return showLive();
-  loadMonth(i).then((m) => { if (wanted === i) showMonth(m); });
+  if (atNow) { announce(null); return showLive(); }
+  loadMonth(i).then((m) => {
+    if (wanted !== i) return;
+    showMonth(m);
+    const ym = fromIndex(i);
+    announce({ ...m, key: `${ym.y}-${pad(ym.m + 1)}`, month: ym.m });
+  });
 }
 
 input.addEventListener('input', () => select(Number(input.value)));

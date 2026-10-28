@@ -26,6 +26,11 @@ const ROAD_W = { motorway: 1, trunk: 0.9, primary: 0.7, secondary: 0.5, tertiary
 
 let app, map, g, S, U, F, R, trees = [];
 let mode = 'temp', scen = 'live', deltaOnly = false, fxOn = true;
+let showOriginal = false;      // comparison card "Original": hide the user's edits in the layer too
+let monthRef = null;           // same calendar month, measured 2020–2025 average (colour scale anchor for the slider)
+let pickedScen = 'live';       // dropdown choice to go back to when the slider returns to "Now"
+const MONTH_NAMES = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+const monthsData = fetch('data/climate-months.json').then(r => r.json()).then(j => j.months).catch(() => ({}));
 
 const CSS = `
 #cl-panel{position:absolute;top:148px;right:54px;z-index:2;width:240px;padding:12px 14px;box-sizing:border-box;
@@ -215,10 +220,12 @@ function field(sc, withUser) {
   return { T, PM, RH };
 }
 function computeRanges() {
+  // Slider month: colour scale comes from the same month in 2020–2025, so a warmer future month looks redder.
+  const ref = scen === 'month' && monthRef ? field(monthRef, false) : F.base;
   R = {};
   for (const key of ['T', 'PM', 'RH']) {
     let lo = Infinity, hi = -Infinity;
-    for (const v of F.base[key]) { if (v < lo) lo = v; if (v > hi) hi = v; }
+    for (const v of ref[key]) { if (v < lo) lo = v; if (v > hi) hi = v; }
     if (hi - lo < MIN_SPAN[key]) { const m = (hi + lo) / 2; lo = m - MIN_SPAN[key] / 2; hi = m + MIN_SPAN[key] / 2; }
     R[key] = [lo, hi];
   }
@@ -305,6 +312,7 @@ function updateEdits() {
     }
   }
   const head = `<div><b>Your edits</b><span>+${U.nTrees} trees, +${U.nBuild} bldg, −${U.nRemoved} bldg</span></div>`;
+  if (showOriginal) { el.innerHTML = head + '<div style="color:#8a969c">Viewing the original city: edits hidden.</div>'; return; }
   if (!n) { el.innerHTML = head + '<div style="color:#8a969c">Place a tree or building to see its effect.</div>'; return; }
   el.innerHTML = head +
     `<div><span>Affected area</span><b>≈ ${Math.round(n * CELL * CELL).toLocaleString()} m²</b></div>` +
@@ -319,13 +327,43 @@ function refresh(full) {
     if (full || !S) buildStatic();
     buildUser();
     const sc = SCEN[scen];
-    F = { base: field(sc, false), scn: field(sc, true) };
+    const base = field(sc, false);
+    F = { base, scn: showOriginal ? base : field(sc, true) };
     computeRanges();
-    paint(); updateLegend(); updateEdits(); updateMask();
+    paint(); updateLegend(); updateEdits(); updateMask(); updateRef();
   } catch (err) { console.error('climate layer failed:', err); }
 }
 let timer;
 const schedule = (full, ms = 250) => { clearTimeout(timer); timer = setTimeout(() => refresh(full), ms); };
+
+/* ---------------- time slider month (event from time-slider.js) ---------------- */
+async function setMonth(m) {
+  const sel = document.getElementById('cl-scen');
+  if (!sel) return;
+  let opt = sel.querySelector('option[value="month"]');
+  if (!m || m.tmax == null) { // back to "Now" (or month without data)
+    if (opt) opt.remove();
+    scen = pickedScen; sel.value = scen; monthRef = null;
+    return schedule(false, 30);
+  }
+  const all = await monthsData, mm = String(m.month + 1).padStart(2, '0');
+  const past = Object.entries(all).filter(([k, d]) => k.endsWith('-' + mm) && d.k === 'm' && +k.slice(0, 4) <= 2025);
+  const avg = (f) => { const v = past.map(([, d]) => d[f]).filter(x => x != null); return v.length ? v.reduce((a, b) => a + b, 0) / v.length : null; };
+  monthRef = { T: avg('tx') ?? m.tmax, rh: avg('h') ?? m.humidity, pm: avg('pm25') ?? SCEN.live.pm, precip: 0, name: MONTH_NAMES[m.month] };
+  SCEN.month = { T: m.tmax, rh: m.humidity ?? monthRef.rh, pm: m.pm2_5 ?? monthRef.pm, precip: 0, label: m.label, kind: m.kind };
+  if (!opt) { opt = document.createElement('option'); opt.value = 'month'; sel.prepend(opt); }
+  opt.textContent = `${m.label} · avg. daily max ${m.tmax.toFixed(1)} °C`;
+  scen = 'month'; sel.value = 'month';
+  schedule(false, 30);
+}
+function updateRef() {
+  const el = document.getElementById('cl-ref');
+  if (!el) return;
+  if (scen !== 'month' || !monthRef) { el.style.display = 'none'; return; }
+  const d = SCEN.month.T - monthRef.T;
+  el.style.display = 'block';
+  el.innerHTML = `${SCEN.month.label} (${SCEN.month.kind}): <b style="color:${d > 0 ? '#c2410c' : '#1d4ed8'}">${fmt(d)} °C</b> vs. ${monthRef.name} 2020–25 average. Colours use the 2020–25 scale.`;
+}
 
 /* ---------------- live weather (Open-Meteo) ---------------- */
 async function loadLive() {
@@ -413,6 +451,7 @@ function buildUI() {
           <option value="snow">Winter storm −2 °C</option><option value="rain">Heavy rain 11 °C</option>
         </select>
       </label>
+      <div id="cl-ref" style="display:none;margin:-2px 0 6px;color:#475569;font-size:11px"></div>
       <label class="cl-chk"><input type="checkbox" id="cl-delta"> Show only the change from my edits</label>
       <label class="cl-chk"><input type="checkbox" id="cl-fxon" checked> Rain / snow effect</label>
       <div id="cl-bar"></div>
@@ -434,7 +473,11 @@ function buildUI() {
     p.querySelectorAll('[data-m]').forEach(x => x.classList.toggle('on', x === b));
     if (F) { paint(); updateLegend(); }
   });
-  p.querySelector('#cl-scen').onchange = (e) => { scen = e.target.value; refresh(false); };
+  p.querySelector('#cl-scen').onchange = (e) => {
+    scen = e.target.value;
+    if (scen !== 'month') pickedScen = scen;
+    refresh(false);
+  };
   p.querySelector('#cl-delta').onchange = (e) => { deltaOnly = e.target.checked; if (F) { paint(); updateLegend(); } };
   p.querySelector('#cl-fxon').onchange = (e) => { fxOn = e.target.checked; };
   p.querySelector('#cl-min').onclick = (e) => {
@@ -467,6 +510,8 @@ async function init() {
   refresh(true);
 
   window.addEventListener('scene-changed', () => schedule(false, 150));
+  window.addEventListener('climate-month', (e) => setMonth(e.detail));
+  window.addEventListener('view-original', (e) => { showOriginal = !!e.detail; schedule(false, 30); });
   map.on('sourcedata', (e) => { if (e.sourceId === 'openmaptiles' && e.isSourceLoaded) schedule(true, 1200); });
   map.on('moveend', () => {
     if (!g) return;
