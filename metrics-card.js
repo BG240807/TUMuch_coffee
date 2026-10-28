@@ -64,12 +64,18 @@ export function showMonth(m) {
     <div class="mc-row"><span>Humidity</span><b>${fmt(m.humidity)} %</b></div>
     <div class="mc-more">
       <div class="mc-row"><span>Hot days (≥ 30°)</span><b>${fmt(m.hotDays)}</b></div>
+      <div class="mc-row"><span>Tropical nights (≥ 20°)</span><b>${fmt(m.tropicalNights)}</b></div>
       <div class="mc-row"><span>Rain (month)</span><b>${fmt(m.rain, 0)} mm</b></div>
-      ${m.kind === 'projected' ? '' : `
+      <div class="mc-row"><span>Heavy-rain days (≥ 20 mm)</span><b>${fmt(m.heavyRainDays)}</b></div>
+      <div class="mc-row"><span>Wind (avg)</span><b>${fmt(m.wind, 0)} km/h</b></div>
+      ${m.kind === 'projected' ? `
+      <div class="mc-row"><span>PM2.5 (estimate)</span><b>${fmt(m.pm2_5, 1)} µg/m³</b></div>
+      <div class="mc-row"><span>PM10 (estimate)</span><b>${fmt(m.pm10, 1)} µg/m³</b></div>
+      <div class="mc-note">PM2.5 limits: EU from 2030 10 µg/m³ · WHO guideline 5 µg/m³ (annual mean).</div>` : `
       <div class="mc-row"><span>PM2.5</span><b>${fmt(m.pm2_5, 1)} µg/m³</b></div>
       <div class="mc-row"><span>PM10</span><b>${fmt(m.pm10, 1)} µg/m³</b></div>`}
       <div class="mc-note">${m.kind === 'projected'
-        ? `Average of ${m.models ?? 7} climate models (CMIP6 HighResMIP via Open-Meteo), this month in ${m.years ? m.years.join('–') : '±5 years'}. A projection, not a forecast; no air-quality projection.`
+        ? `Average of ${m.models ?? 7} climate models (CMIP6 HighResMIP via Open-Meteo), this month in ${m.years ? m.years.join('–') : '±5 years'}, bias-corrected against measured 2021–2025. A projection, not a forecast. PM estimate: Europe-wide SSP2-4.5 trend (Clayton et al. 2024) applied to Heilbronn's 2023–25 values; no projection for air-quality index, NO₂ or ozone.`
         : 'Monthly average of measured history (ERA5 reanalysis and CAMS air quality via Open-Meteo).'}</div>
     </div>`;
 }

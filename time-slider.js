@@ -41,7 +41,8 @@ async function loadMonth(i) {
   const kind = i > TODAY ? 'projected' : 'measured';
   const d = (await months)[`${ym.y}-${pad(ym.m + 1)}`];
   if (!d) return { label: label(ym), kind }; // missing month: the card shows dashes
-  return { label: label(ym), kind, temp: d.t, tmax: d.tx, hotDays: d.hd, humidity: d.h, rain: d.r,
+  return { label: label(ym), kind, temp: d.t, tmax: d.tx, hotDays: d.hd, tropicalNights: d.tn, heavyRainDays: d.hr,
+    humidity: d.h, rain: d.r, wind: d.w,
     aqi: d.aqi, pm2_5: d.pm25, pm10: d.pm10,
     models: d.n, years: kind === 'projected' ? [Math.max(ym.y - PROJ_WINDOW, PROJ_FIRST), Math.min(ym.y + PROJ_WINDOW, END_YEAR)] : null };
 }
