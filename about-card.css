@@ -1,0 +1,63 @@
+.about-btn {
+  position: absolute;
+  right: 10px;
+  bottom: 36px; /* above the map attribution */
+  z-index: 20;
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  border: 1px solid rgba(0, 0, 0, 0.12);
+  background: rgba(255, 255, 255, 0.88);
+  backdrop-filter: blur(6px);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.15);
+  color: #1f2933;
+  font-family: Georgia, 'Times New Roman', serif;
+  font-size: 14px;
+  font-weight: 700;
+  font-style: italic;
+  line-height: 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  padding: 0;
+  user-select: none;
+}
+
+.about-btn:hover {
+  background: rgba(255, 255, 255, 0.96);
+}
+
+.about-card {
+  position: absolute;
+  right: 10px;
+  bottom: 72px;
+  z-index: 20;
+  max-width: 300px;
+  background: rgba(255, 255, 255, 0.88);
+  backdrop-filter: blur(6px);
+  border-radius: 8px;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.15);
+  padding: 10px 12px;
+  font: 12px/1.4 system-ui, -apple-system, sans-serif;
+  color: #1f2933;
+}
+
+.about-card[hidden] {
+  display: none;
+}
+
+.about-card-title {
+  margin: 0 0 6px;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.about-card-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
