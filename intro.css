@@ -1,0 +1,77 @@
+.intro-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 16px;
+  background: rgba(15, 23, 42, 0.25);
+  backdrop-filter: blur(6px);
+  -webkit-backdrop-filter: blur(6px);
+  opacity: 1;
+  transition: opacity 0.4s ease;
+}
+
+.intro-overlay.intro-fade-out {
+  opacity: 0;
+  pointer-events: none;
+}
+
+.intro-overlay[hidden] {
+  display: none;
+}
+
+.intro-card {
+  font-family: system-ui, -apple-system, sans-serif;
+  max-width: 380px;
+  width: 100%;
+  background: rgba(255, 255, 255, 0.9);
+  backdrop-filter: blur(6px);
+  -webkit-backdrop-filter: blur(6px);
+  border-radius: 12px;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.15);
+  padding: 24px 22px;
+  text-align: center;
+  color: #1f2933;
+  box-sizing: border-box;
+}
+
+.intro-logo {
+  width: 120px;
+  height: auto;
+  border-radius: 10px;
+  display: block;
+  margin: 0 auto 14px;
+  object-fit: contain;
+}
+
+.intro-title {
+  margin: 0 0 8px;
+  font-size: 20px;
+  font-weight: 700;
+  color: #1f2933;
+}
+
+.intro-subtitle {
+  margin: 0 0 18px;
+  font-size: 13px;
+  line-height: 1.45;
+  color: #4b5563;
+}
+
+.intro-btn {
+  background: #10B981;
+  color: #ffffff;
+  border: 0;
+  border-radius: 8px;
+  padding: 10px 20px;
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: filter 0.15s ease;
+}
+
+.intro-btn:hover {
+  filter: brightness(0.95);
+}
