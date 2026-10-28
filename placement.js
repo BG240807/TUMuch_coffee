@@ -382,12 +382,36 @@ function ghostRing(type, p) {
   const hw = BUILDING.w / 2, hd = BUILDING.d / 2;
   return [[-hw, -hd], [hw, -hd], [hw, hd], [-hw, hd], [-hw, -hd]].map(([dx, dy]) => [p[0] + dx, p[1] + dy]);
 }
+// a see-through 3D tree or building at the cursor (same shapes as in index.html), green or red
+let ghost3d = null;
+function makeGhost3d() {
+  const mat = new THREE.MeshLambertMaterial({ color: 0x43a047, transparent: true, opacity: 0.5, depthWrite: false });
+  const tree = new THREE.Group();
+  tree.add(new THREE.Mesh(new THREE.CylinderGeometry(0.25, 0.4, 4, 6).translate(0, 2, 0), mat),
+    new THREE.Mesh(new THREE.IcosahedronGeometry(3, 1).scale(1, 1.2, 1).translate(0, 6, 0), mat));
+  tree.scale.setScalar(1.2);
+  const building = new THREE.Mesh(new THREE.BoxGeometry(BUILDING.w, 16, BUILDING.d).translate(0, 8, 0), mat);
+  tree.visible = building.visible = false;
+  app.scene.add(tree, building);
+  return { tree, building, mat };
+}
 function showGhost(type, pt, reason, point) {
   map.getSource('placement-ghost').setData({ type: 'Feature', properties: { ok: !reason },
     geometry: { type: 'Polygon', coordinates: [ghostRing(type, toM(pt)).map(toLL)] } });
+  ghost3d ??= makeGhost3d();
+  const obj = ghost3d[type], other = ghost3d[type === 'tree' ? 'building' : 'tree'];
+  obj.position.copy(app.toScene(pt[0], pt[1], app.groundAt(pt[0], pt[1])));
+  obj.visible = true;
+  other.visible = false;
+  ghost3d.mat.color.set(reason ? 0xe53935 : 0x43a047);
+  map.triggerRepaint();
   setTip(reason ? `✗ Not here: ${reason}` : type === 'tree' ? '✓ Plant tree here' : '✓ Build here', !reason, point);
 }
-function hideGhost() { map.getSource('placement-ghost')?.setData(EMPTY); setTip(null); }
+function hideGhost() {
+  map.getSource('placement-ghost')?.setData(EMPTY);
+  if (ghost3d?.tree.visible || ghost3d?.building.visible) { ghost3d.tree.visible = ghost3d.building.visible = false; map.triggerRepaint(); }
+  setTip(null);
+}
 const activeTool = () => document.querySelector('#ui button.active')?.id;
 const placeType = () => ({ btnTree: 'tree', btnBuilding: 'building' })[activeTool()];
 function say(html) { info.innerHTML = html; info.style.display = html ? 'block' : 'none'; }
@@ -529,7 +553,7 @@ function sinkOut(features) {
   })(t0);
 }
 function floatText(ringM, text) {
-  const p = map.project(toLL(centroid(ringM)));
+  const p = map.project(toLL(ringM.length > 2 ? centroid(ringM) : ringM[0]));
   const el = Object.assign(document.createElement('div'), { className: 'pl-float', textContent: text });
   el.style.left = `${p.x}px`;
   el.style.top = `${p.y}px`;
@@ -615,10 +639,112 @@ function loadAreas() {
   try { areas = (JSON.parse(sessionStorage.getItem(STORE_KEY)) || []).filter((a) => a.trees); } catch { areas = []; }
 }
 
+// ---------- tree brush: hold the mouse down and paint trees ----------
+const BRUSH = { min: 5, max: 40, gap: 7, tries: 6 }; // m; gap between brushed trees; spots tried per mouse move
+let brush = null;          // { r, painting, stroke: [placed entries], last, timer } while the brush is on
+const strokes = [];        // undo stack, one entry per stroke
+let brushBtn;
+const brushHelp = () => `<b>Tree brush</b>: hold the mouse down and paint. Size ${brush.r} m ` +
+  '<button id="pl-smaller">−</button><button id="pl-bigger">+</button> (or [ and ]). ' +
+  `${strokes.length ? '<button id="pl-undo-stroke">Undo stroke</button>' : ''}<button id="pl-brush-done">Done</button>`;
+function sayBrush() {
+  say(brushHelp());
+  document.getElementById('pl-smaller').onclick = () => resizeBrush(-5);
+  document.getElementById('pl-bigger').onclick = () => resizeBrush(5);
+  document.getElementById('pl-brush-done').onclick = stopBrush;
+  const u = document.getElementById('pl-undo-stroke');
+  if (u) u.onclick = undoStroke;
+}
+function resizeBrush(d) {
+  brush.r = Math.min(BRUSH.max, Math.max(BRUSH.min, brush.r + d));
+  if (cursorM) drawBrush(cursorM);
+  sayBrush();
+}
+function drawBrush(p) {
+  const ring = Array.from({ length: 41 }, (_, i) => [p[0] + brush.r * Math.cos((i / 40) * 2 * Math.PI), p[1] + brush.r * Math.sin((i / 40) * 2 * Math.PI)]);
+  map.getSource('brush-cursor').setData({ type: 'Feature', properties: {}, geometry: { type: 'LineString', coordinates: ring.map(toLL) } });
+}
+function startBrush() {
+  if (document.getElementById('btnTree')?.disabled) return;
+  document.getElementById('btnNav').click();
+  document.querySelectorAll('#ui button').forEach((b) => b.classList.remove('active'));
+  brushBtn.classList.add('active');
+  ensureGeo();
+  brush = { r: 15, painting: false, stroke: [] };
+  map.dragPan.disable();
+  map.getCanvas().style.cursor = 'none';
+  sayBrush();
+}
+function stopBrush() {
+  if (!brush) return;
+  endStroke();
+  brush = null;
+  map.dragPan.enable();
+  map.getCanvas().style.cursor = '';
+  brushBtn.classList.remove('active');
+  map.getSource('brush-cursor').setData(EMPTY);
+  if (!document.querySelector('#ui button.active')) document.getElementById('btnNav').click();
+  say('');
+}
+function paintAt(p) {
+  for (let i = 0; i < BRUSH.tries; i++) {
+    const a = Math.random() * 2 * Math.PI, d = brush.r * Math.sqrt(Math.random());
+    const q = [p[0] + d * Math.cos(a), p[1] + d * Math.sin(a)];
+    const ll = toLL(q);
+    if (check('tree', ll) || placedNear(q, 'tree', BRUSH.gap)) continue;
+    const obj = app.addObject('tree', ll[0], ll[1]);
+    brush.stroke.push(app.placed[app.placed.length - 1]);
+    growIn([obj]);
+  }
+}
+// paint along the way from the last painted spot, so fast strokes leave a trail
+function paintTo(p) {
+  const last = brush.last || p;
+  const steps = Math.max(1, Math.ceil(distM(last, p) / (brush.r / 2)));
+  for (let i = 1; i <= steps; i++) paintAt([last[0] + ((p[0] - last[0]) * i) / steps, last[1] + ((p[1] - last[1]) * i) / steps]);
+  brush.last = p;
+}
+function startStroke(p) {
+  brush.painting = true;
+  brush.stroke = [];
+  brush.last = p;
+  paintAt(p);
+  // holding the mouse still keeps filling the circle, like a spray can
+  brush.timer = setInterval(() => { if (cursorM) paintAt(cursorM); }, 120);
+}
+function endStroke() {
+  if (!brush?.painting) return;
+  brush.painting = false;
+  clearInterval(brush.timer);
+  if (!brush.stroke.length) return;
+  strokes.push(brush.stroke);
+  if (cursorM) floatText([cursorM, cursorM], `+${trees(brush.stroke.length)}`);
+  brush.stroke = [];
+  app.updateCount();
+  app.saveSession();
+  sayBrush();
+}
+function undoStroke() {
+  const st = strokes.pop();
+  if (!st) return;
+  for (const o of st) {
+    const i = app.placed.indexOf(o);
+    if (i >= 0) { app.scene.remove(o.obj); app.placed.splice(i, 1); }
+  }
+  app.updateCount();
+  app.saveSession();
+  if (brush) sayBrush();
+}
+
 // ---------- mouse ----------
 function onMove(ev) {
   const pt = [ev.lngLat.lng, ev.lngLat.lat];
   cursorM = toM(pt);
+  if (brush) {
+    drawBrush(cursorM);
+    if (brush.painting) paintTo(cursorM);
+    return setTip(brush.painting ? `+${trees(brush.stroke.length)}` : 'Hold the mouse down to paint trees', true, ev.point);
+  }
   if (tool && !pending) {
     ensureGeo();
     if (tool === 'draw' || ev.originalEvent?.shiftKey) {
@@ -694,10 +820,24 @@ function init() {
     title: 'Turn a square, lawn or block green: buildings inside are demolished and trees planted' });
   document.getElementById('btnBuilding').after(btn);
   btn.addEventListener('click', () => (tool ? (stopTool(), say('')) : startTool()));
-  // any other tool ends the green area tool
-  document.querySelectorAll('#ui button').forEach((b) => b !== btn && b.addEventListener('click', () => {
-    if (tool) { stopTool(); say(''); }
-  }));
+  brushBtn = Object.assign(document.createElement('button'), { id: 'btnTreeBrush', textContent: '🖌️ Tree brush',
+    title: 'Hold the mouse down and paint trees' });
+  btn.after(brushBtn);
+  brushBtn.addEventListener('click', () => (brush ? stopBrush() : startBrush()));
+  // any other tool ends the green area tool / the brush
+  document.getElementById('ui').addEventListener('click', (e) => {
+    const b = e.target.closest('button');
+    if (!b) return;
+    if (b !== btn && tool) { stopTool(); say(''); }
+    if (b !== brushBtn && brush) stopBrush();
+  });
+
+  // our two buttons make the toolbar taller: keep the climate layer's panel (fixed at top:150px) below it
+  const ui = document.getElementById('ui');
+  new ResizeObserver(() => {
+    const cl = document.getElementById('cl-panel');
+    if (cl) cl.style.top = `${ui.offsetTop + ui.offsetHeight + 10}px`;
+  }).observe(ui);
 
   map.addSource('green-areas', { type: 'geojson', data: EMPTY });
   const colour = ['match', ['get', 'state'], 'bad', '#c62828', 'pending', '#f9a825', '#2e7d32'];
@@ -712,7 +852,7 @@ function init() {
     paint: { 'circle-radius': 5, 'circle-color': '#fff', 'circle-stroke-width': 2, 'circle-stroke-color': colour } });
   map.addSource('placement-ghost', { type: 'geojson', data: EMPTY });
   map.addLayer({ id: 'placement-ghost', type: 'fill', source: 'placement-ghost',
-    paint: { 'fill-color': ['case', ['get', 'ok'], '#2e7d32', '#c62828'], 'fill-opacity': 0.55 } }, 'buildings-own');
+    paint: { 'fill-color': ['case', ['get', 'ok'], '#2e7d32', '#c62828'], 'fill-opacity': 0.35 } }, 'buildings-own');
   // buildings a green area would demolish (red), and the ones sinking away after applying
   const height = ['+', ['coalesce', ['get', 'render_height'], 8], 0.4];
   const base = ['coalesce', ['get', 'render_min_height'], 0];
@@ -722,6 +862,8 @@ function init() {
   map.addSource('demolish-anim', { type: 'geojson', data: EMPTY });
   map.addLayer({ id: 'demolish-anim', type: 'fill-extrusion', source: 'demolish-anim',
     paint: { 'fill-extrusion-color': '#e8e4dc', 'fill-extrusion-height': height, 'fill-extrusion-base': base, 'fill-extrusion-opacity': 0.9 } });
+  map.addSource('brush-cursor', { type: 'geojson', data: EMPTY });
+  map.addLayer({ id: 'brush-cursor', type: 'line', source: 'brush-cursor', paint: { 'line-color': '#2e7d32', 'line-width': 2.5 } });
   setupGhosts();
 
   loadAreas();
@@ -745,10 +887,23 @@ function init() {
   });
   map.getCanvas().addEventListener('mouseleave', () => {
     hideGhost();
+    if (brush) { endStroke(); map.getSource('brush-cursor').setData(EMPTY); }
     if (tool && !pending) { cursorM = null; hover = null; clearPreview(); drawState(); }
   });
   map.on('click', onClick);
+  map.on('mousedown', (e) => {
+    if (!brush || e.originalEvent.button !== 0) return;
+    cursorM = toM([e.lngLat.lng, e.lngLat.lat]);
+    startStroke(cursorM);
+  });
+  window.addEventListener('mouseup', endStroke);
   window.addEventListener('keydown', (e) => {
+    if (brush) {
+      if (e.key === '[') resizeBrush(-5);
+      if (e.key === ']') resizeBrush(5);
+      if (e.key === 'Escape') stopBrush();
+      return;
+    }
     if (!tool) return;
     if (e.key === 'Escape') {
       if (pending) { pending = null; clearPreview(); setMode(tool); } else { stopTool(); say(''); }
@@ -764,7 +919,8 @@ function init() {
     const original = document.querySelector('#comparison-card button[aria-pressed="true"]')?.textContent === 'Original';
     for (const id of ['green-areas-fill', 'green-areas-line', 'green-areas-corners'])
       if (map.getLayer(id)) map.setLayoutProperty(id, 'visibility', original ? 'none' : 'visible');
-    btn.disabled = !!document.getElementById('btnTree')?.disabled;
+    btn.disabled = brushBtn.disabled = !!document.getElementById('btnTree')?.disabled;
+    if (brushBtn.disabled && brush) stopBrush();
     const ids = map.getStyle().layers.map((l) => l.id);
     if (ids.includes('climate-overlay') && ids.indexOf('climate-overlay') > ids.indexOf('green-areas-fill'))
       for (const id of ['green-areas-fill', 'green-areas-line', 'placement-ghost']) map.moveLayer(id, 'buildings-own');
