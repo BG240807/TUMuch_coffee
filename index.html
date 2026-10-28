@@ -71,6 +71,7 @@ const map = new maplibregl.Map({
   maxPitch: 85
 });
 map.addControl(new maplibregl.NavigationControl({ visualizePitch: true }));
+map.boxZoom.disable(); // shift+drag draws our own selection box instead of zooming
 
 // ---------- three.js scene ----------
 const originMerc = maplibregl.MercatorCoordinate.fromLngLat(ORIGIN, 0);
@@ -199,29 +200,31 @@ const customLayer = {
 };
 
 // ---------- map buildings: select / delete ----------
-// OpenFreeMap merges many buildings into one MultiPolygon feature per tile, so a layer filter
-// can only hide whole groups at once. Instead we copy every building polygon out of the tiles
-// into our own GeoJSON source (one polygon per building part) and draw that. Deleting a building
-// just leaves its polygons out; each is remembered as one point inside the polygon.
-// Large buildings (church, Experimenta, ...) consist of several touching parts, so selecting
-// one part selects the whole group of connected footprints, and delete / restore act on the group.
 const EMPTY = { type: 'FeatureCollection', features: [] };
 const buildings = new Map();  // key -> { poly, props, bbox, sbox, feature, pt, scene }
 const deleted = [];           // [[lng, lat], ...] one interior point per deleted building part
-let selected = null;          // { kind: 'building', b, group } | { kind: 'tree', i } | { kind: 'placed', rec } | null
-// Everything deleted this session, in order (so "Restore" can undo the latest one):
-// { kind: 'building', pts: [[lng, lat], ...] } | { kind: 'tree', i } (cadastre tree index) | { kind: 'placed', type, lng, lat, s, ci }
+let selected = null;          // { buildings: [], trees: [], placed: [] } | null
 const history = [];
-// translucent orange box that marks a selected tree / placed object
-const hl = new THREE.Mesh(
+
+// translucent orange boxes that mark selected trees / placed objects (one instanced mesh)
+const HL_MAX = 4000;
+const hl = new THREE.InstancedMesh(
   new THREE.BoxGeometry(1, 1, 1),
-  new THREE.MeshBasicMaterial({ color: 0xff9800, transparent: true, opacity: 0.4, depthWrite: false })
+  new THREE.MeshBasicMaterial({ color: 0xff9800, transparent: true, opacity: 0.4, depthWrite: false }),
+  HL_MAX
 );
+hl.count = 0;
 hl.visible = false;
+hl.frustumCulled = false;
 hl.renderOrder = 10;
 scene.add(hl);
+const _m = new THREE.Matrix4(), _p = new THREE.Vector3(), _q = new THREE.Quaternion();
+const _sc = new THREE.Vector3(), _c = new THREE.Vector3(), _s = new THREE.Vector3();
+function setHl(n, x, y, z, sx, sy, sz) {
+  hl.setMatrixAt(n, _m.compose(_p.set(x, y, z), _q, _sc.set(sx, sy, sz)));
+}
 let tookOver = false;
-let nextBid = 1;              // unique id per building polygon, used to hide the selected ones in the base layer
+let nextBid = 1;
 
 // --- geometry helpers ---
 function ringArea(r) {
@@ -240,8 +243,6 @@ function pointInRing(pt, r) {
 function inPolygon(pt, poly) {
   return pointInRing(pt, poly[0]) && !poly.slice(1).some(h => pointInRing(pt, h));
 }
-// a point that is really inside the polygon (centroid, a point between centroid and a corner,
-// or as a last resort a grid scan over the bounding box)
 function interiorPoint(poly) {
   const ring = poly[0];
   let A = 0, cx = 0, cy = 0;
@@ -269,7 +270,6 @@ function interiorPoint(poly) {
   return null;
 }
 
-// --- copy building polygons out of the loaded vector tiles ---
 function collectBuildings() {
   if (!map.getSource('openmaptiles') || map.getZoom() < 14) return;
   const fs = map.querySourceFeatures('openmaptiles', { sourceLayer: 'building' });
@@ -285,7 +285,7 @@ function collectBuildings() {
       if (buildings.has(key)) continue;
       let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
       for (const [x, y] of ring) { x0 = Math.min(x0, x); x1 = Math.max(x1, x); y0 = Math.min(y0, y); y1 = Math.max(y1, y); }
-      const a = toScene(x0, y0, 0), c = toScene(x1, y1, 0); // scene x grows east, z grows south
+      const a = toScene(x0, y0, 0), c = toScene(x1, y1, 0);
       const bprops = { ...props, bid: nextBid++ };
       buildings.set(key, {
         key, poly, props: bprops,
@@ -299,7 +299,7 @@ function collectBuildings() {
   }
   if (added) {
     refreshBuildings();
-    if (!tookOver) { // our layer now draws the buildings; hide the original tile layer
+    if (!tookOver) {
       tookOver = true;
       map.setPaintProperty('buildings-3d', 'fill-extrusion-opacity', 0);
     }
@@ -320,37 +320,41 @@ function refreshBuildings() {
 }
 function refreshSelection() {
   const src = map.getSource('building-selected');
-  const isBuilding = selected && selected.kind === 'building';
-  if (src) src.setData(isBuilding
-    ? { type: 'FeatureCollection', features: selected.group.map(g => g.feature) }
+  const bs = selected ? selected.buildings : [];
+  if (src) src.setData(bs.length
+    ? { type: 'FeatureCollection', features: bs.map(g => g.feature) }
     : EMPTY);
-  // Hide the selected polygons in the base layer while they are highlighted. Two copies of the
-  // same walls on top of each other flicker (z-fighting), which showed as orange stripes.
   if (map.getLayer('buildings-own')) {
-    map.setFilter('buildings-own', isBuilding
-      ? ['!', ['in', ['get', 'bid'], ['literal', selected.group.map(g => g.props.bid)]]]
+    map.setFilter('buildings-own', bs.length
+      ? ['!', ['in', ['get', 'bid'], ['literal', bs.map(g => g.props.bid)]]]
       : null);
   }
   updateHighlight();
+  updateCount();
 }
 function updateHighlight() {
-  hl.visible = false;
-  if (!selected) return;
-  if (selected.kind === 'tree' && cadastre) {
-    const t = cadastre.info(selected.i);
-    hl.position.set(t.x, t.elev + t.H / 2, t.z);
-    hl.scale.set(t.crown, t.H, t.crown);
-    hl.visible = true;
-  } else if (selected.kind === 'placed') {
-    placedBox(selected.rec.obj, _box);
-    _box.getCenter(hl.position);
-    _box.getSize(hl.scale);
-    hl.visible = true;
+  let n = 0;
+  if (selected) {
+    if (cadastre) {
+      for (const i of selected.trees) {
+        if (n >= HL_MAX) break;
+        const t = cadastre.info(i);
+        if (t) setHl(n++, t.x, t.elev + t.H / 2, t.z, t.crown, t.H, t.crown);
+      }
+    }
+    for (const rec of selected.placed) {
+      if (n >= HL_MAX) break;
+      placedBox(rec.obj, _box);
+      _box.getCenter(_c);
+      _box.getSize(_s);
+      setHl(n++, _c.x, _c.y, _c.z, _s.x, _s.y, _s.z);
+    }
   }
+  hl.count = n;
+  hl.visible = n > 0;
+  hl.instanceMatrix.needsUpdate = true;
 }
 
-// --- picking: cast the click's camera ray through our own building footprints ---
-// Uses the same projection matrix the three.js layer renders with, so it matches what you see.
 function pickRay(point) {
   const c = map.getCanvas();
   const x = (point.x / c.clientWidth) * 2 - 1;
@@ -358,7 +362,7 @@ function pickRay(point) {
   const inv = camera.projectionMatrix.clone().invert();
   const near = new THREE.Vector3(x, y, -1).applyMatrix4(inv);
   const far = new THREE.Vector3(x, y, 1).applyMatrix4(inv);
-  const elev = map.transform.elevation || 0; // scene.position.y = -elev, undo that
+  const elev = map.transform.elevation || 0;
   near.y += elev; far.y += elev;
   return { o: near, d: far.sub(near).normalize() };
 }
@@ -375,7 +379,6 @@ function segBoxRange(ax, az, bx, bz, box) {
   return [s0, s1];
 }
 
-// footprint in scene metres (x = east, z = south), computed lazily
 function ensureScene(b) {
   if (!b.scene) b.scene = b.poly.map(r => r.map(([lng, lat]) => { const v = toScene(lng, lat, 0); return [v.x, v.z]; }));
   return b.scene;
@@ -385,9 +388,8 @@ function insideScene(b, p) {
   return pointInRing(p, s[0]) && !s.slice(1).some(h => pointInRing(p, h));
 }
 
-// --- grouping: building parts that touch or overlap belong together ---
-const TOUCH_EPS = 1.2;   // metres; tile coordinates are quantised to ~0.4 m and simplified, so shared walls can be ~1 m apart
-const MAX_GROUP = 300;   // safety cap so grouping can't spread across a whole city block
+const TOUCH_EPS = 1.2;
+const MAX_GROUP = 300;
 
 function distPtSeg(p, a, b) {
   const dx = b[0] - a[0], dz = b[1] - a[1], l2 = dx * dx + dz * dz;
@@ -395,7 +397,7 @@ function distPtSeg(p, a, b) {
   t = Math.max(0, Math.min(1, t));
   return Math.hypot(p[0] - a[0] - t * dx, p[1] - a[1] - t * dz);
 }
-function ringNear(pts, ring) {            // any vertex of pts within eps of ring's edges?
+function ringNear(pts, ring) {
   for (const p of pts)
     for (let i = 0; i < ring.length - 1; i++)
       if (distPtSeg(p, ring[i], ring[i + 1]) <= TOUCH_EPS) return true;
@@ -407,9 +409,9 @@ function segsCross(a, b, c, d) {
 }
 function footprintsTouch(a, b) {
   const A = ensureScene(a)[0], B = ensureScene(b)[0];
-  if (A.some(p => pointInRing(p, B)) || B.some(p => pointInRing(p, A))) return true; // overlap / containment
-  if (ringNear(A, B) || ringNear(B, A)) return true;                                 // shared edge or corner
-  for (let i = 0; i < A.length - 1; i++)                                             // crossing edges
+  if (A.some(p => pointInRing(p, B)) || B.some(p => pointInRing(p, A))) return true;
+  if (ringNear(A, B) || ringNear(B, A)) return true;
+  for (let i = 0; i < A.length - 1; i++)
     for (let j = 0; j < B.length - 1; j++)
       if (segsCross(A[i], A[i + 1], B[j], B[j + 1])) return true;
   return false;
@@ -429,12 +431,10 @@ function connectedGroup(start) {
   }
   return group;
 }
-// the polygons that get selected / deleted together; each needs an interior point to be deletable
 function groupFor(b) {
   const group = connectedGroup(b);
   for (const g of group) if (!g.pt) g.pt = interiorPoint(g.poly);
   const usable = group.filter(g => g.pt);
-  if (usable.length !== group.length) console.warn('[group] parts without interior point:', group.length - usable.length);
   return usable;
 }
 
@@ -442,8 +442,8 @@ function pickBuilding(point, ray) {
   const { o, d } = ray;
   if (d.y > -1e-4) return null;
   const ll = map.unproject(point);
-  const g = groundAt(ll.lng, ll.lat);              // absolute ground height near the click
-  const tTop = Math.max(0, (g + 150 - o.y) / d.y); // ray portion between 150 m above and 3 m below ground
+  const g = groundAt(ll.lng, ll.lat);
+  const tTop = Math.max(0, (g + 150 - o.y) / d.y);
   const tBot = (g - 3 - o.y) / d.y;
   const ax = o.x + d.x * tTop, az = o.z + d.z * tTop;
   const bx = o.x + d.x * tBot, bz = o.z + d.z * tBot;
@@ -466,7 +466,6 @@ function pickBuilding(point, ray) {
   return best ? { b: best, t: bestT } : null;
 }
 
-// --- select anything pickable: map buildings, cadastre trees, placed trees/buildings ---
 const _ray = new THREE.Ray();
 const _box = new THREE.Box3();
 const _hit = new THREE.Vector3();
@@ -476,10 +475,11 @@ function placedBox(obj, box) {
   box.max.set(obj.position.x + u.hx, ground + u.y1, obj.position.z + u.hz);
   return box;
 }
-function selectAt(point) {
-  collectBuildings(); // pick up polygons from tiles that loaded since the last idle event
+
+function selectAt(point, additive = false) {
+  collectBuildings();
   const ray = pickRay(point);
-  let best = null; // nearest hit along the ray wins
+  let best = null;
   const consider = (t, sel) => { if (!best || t < best.t) best = { t, sel }; };
 
   const bh = pickBuilding(point, ray);
@@ -496,41 +496,121 @@ function selectAt(point) {
     consider(ray.o.distanceTo(_hit), { kind: 'placed', rec });
   }
 
-  selected = best ? best.sel : null;
-  if (selected && selected.kind === 'building') {
-    selected.group = groupFor(selected.b);
-    if (!selected.group.includes(selected.b)) selected = null;
-    else console.info('[group]', selected.group.length, selected.group.map(g => g.key));
+  if (!additive || !selected) {
+    selected = { buildings: [], trees: [], placed: [] };
   }
-  console.info('[select]', { kind: selected && selected.kind, distance: best && best.t });
+
+  if (best) {
+    const s = best.sel;
+    if (s.kind === 'building') {
+      const group = groupFor(s.b);
+      for (const gb of group) {
+        const idx = selected.buildings.indexOf(gb);
+        if (idx >= 0) selected.buildings.splice(idx, 1);
+        else selected.buildings.push(gb);
+      }
+    } else if (s.kind === 'tree') {
+      const idx = selected.trees.indexOf(s.i);
+      if (idx >= 0) selected.trees.splice(idx, 1);
+      else selected.trees.push(s.i);
+    } else if (s.kind === 'placed') {
+      const idx = selected.placed.indexOf(s.rec);
+      if (idx >= 0) selected.placed.splice(idx, 1);
+      else selected.placed.push(s.rec);
+    }
+  } else if (!additive) {
+    selected = null;
+  }
   refreshSelection();
-  updateCount();
+}
+
+function boxSelect(x0, y0, x1, y1, additive = false) {
+  collectBuildings();
+  const c = map.getCanvas();
+  const W = c.clientWidth, H = c.clientHeight;
+  const mapElev = map.transform.elevation || 0;
+  const v = new THREE.Vector4();
+  const inRect = (x, y, z) => {
+    v.set(x, y - mapElev, z, 1).applyMatrix4(camera.projectionMatrix);
+    if (v.w <= 0) return false;
+    const sx = (v.x / v.w * 0.5 + 0.5) * W;
+    const sy = (0.5 - v.y / v.w * 0.5) * H;
+    return sx >= x0 && sx <= x1 && sy >= y0 && sy <= y1;
+  };
+
+  const seen = new Set(), parts = [];
+  for (const b of buildings.values()) {
+    if (seen.has(b.key) || isDeleted(b)) continue;
+    const g = groundAt((b.bbox[0] + b.bbox[2]) / 2, (b.bbox[1] + b.bbox[3]) / 2);
+    const lo = b.props.render_min_height || 0, hi = b.props.render_height ?? 8;
+    if (!inRect((b.sbox[0] + b.sbox[1]) / 2, g + (lo + hi) / 2, (b.sbox[2] + b.sbox[3]) / 2)) continue;
+    for (const p of groupFor(b)) if (!seen.has(p.key)) { seen.add(p.key); parts.push(p); }
+  }
+
+  const trees = [];
+  if (cadastre) {
+    const hidden = new Set(history.filter(h => h.kind === 'tree').map(h => h.i));
+    for (let i = 0; i < cadastre.count; i++) {
+      if (hidden.has(i)) continue;
+      let t;
+      try { t = cadastre.info(i); } catch { continue; }
+      if (!t || !Number.isFinite(t.x) || t.visible === false) continue;
+      if (inRect(t.x, t.elev + t.H / 2, t.z)) trees.push(i);
+    }
+  }
+
+  const pl = placed.filter(rec => {
+    const u = rec.obj.userData, p = rec.obj.position;
+    return inRect(p.x, p.y - (u.lift || 0) + (u.y0 + u.y1) / 2, p.z);
+  });
+
+  if (!additive || !selected) {
+    selected = { buildings: [], trees: [], placed: [] };
+  }
+
+  for (const p of parts) {
+    if (!selected.buildings.includes(p)) selected.buildings.push(p);
+  }
+  for (const t of trees) {
+    if (!selected.trees.includes(t)) selected.trees.push(t);
+  }
+  for (const r of pl) {
+    if (!selected.placed.includes(r)) selected.placed.push(r);
+  }
+
+  if (!selected.buildings.length && !selected.trees.length && !selected.placed.length) {
+    selected = null;
+  }
+
+  refreshSelection();
 }
 
 function deleteSelected() {
   if (!selected) return;
-  if (selected.kind === 'building') {
-    const pts = selected.group.map(g => g.pt);
+  const { buildings: bs, trees, placed: pl } = selected;
+  const batch = bs.length + trees.length + pl.length > 1
+    ? 1 + history.reduce((m, h) => Math.max(m, h.batch || 0), 0) : undefined;
+  const tag = (e) => { if (batch) e.batch = batch; return e; };
+
+  if (bs.length) {
+    const pts = bs.map(g => g.pt);
     pts.forEach(p => deleted.push(p));
-    history.push({ kind: 'building', pts });
-    refreshBuildings();
-  } else if (selected.kind === 'tree') {
-    cadastre.hide(selected.i);
-    history.push({ kind: 'tree', i: selected.i });
-  } else if (selected.kind === 'placed') {
-    const rec = selected.rec;
+    history.push(tag({ kind: 'building', pts }));
+  }
+  if (cadastre) {
+    for (const i of trees) { cadastre.hide(i); history.push(tag({ kind: 'tree', i })); }
+  }
+  for (const rec of [...pl]) {
     scene.remove(rec.obj);
     placed.splice(placed.indexOf(rec), 1);
-    history.push({ kind: 'placed', type: rec.type, lng: rec.lng, lat: rec.lat, s: rec.obj.userData.s, ci: rec.obj.userData.ci });
+    history.push(tag({ kind: 'placed', type: rec.type, lng: rec.lng, lat: rec.lat, s: rec.obj.userData.s, ci: rec.obj.userData.ci }));
   }
   selected = null;
-  refreshSelection();
-  updateCount();
+  if (bs.length) refreshBuildings(); else refreshSelection();
   saveSession();
 }
-function restoreLastDeleted() {
-  const h = history.pop();
-  if (!h) return;
+
+function restoreEntry(h) {
   if (h.kind === 'building') {
     for (const pt of h.pts) {
       const k = deleted.findIndex(p => p[0] === pt[0] && p[1] === pt[1]);
@@ -542,14 +622,20 @@ function restoreLastDeleted() {
   } else if (h.kind === 'placed') {
     addObject(h.type, h.lng, h.lat, h);
   }
+}
+function restoreLastDeleted() {
+  const h = history.pop();
+  if (!h) return;
+  restoreEntry(h);
+  while (h.batch && history.length && history[history.length - 1].batch === h.batch) restoreEntry(history.pop());
   updateCount();
   saveSession();
 }
 
-// ---------- session persistence (sessionStorage: survives reloads, cleared when the tab closes) ----------
+// ---------- Session Persistence ----------
 const STORE_KEY = 'heilbronn3d-session';
 function saveSession() {
-    window.dispatchEvent(new Event('scene-changed'));
+  window.dispatchEvent(new Event('scene-changed'));
   try {
     sessionStorage.setItem(STORE_KEY, JSON.stringify({
       placed: placed.map(p => ({ type: p.type, lng: p.lng, lat: p.lat, s: p.obj.userData.s, ci: p.obj.userData.ci })),
@@ -562,34 +648,29 @@ function restoreSession() {
   try { s = JSON.parse(sessionStorage.getItem(STORE_KEY) || 'null'); } catch { /* ignore */ }
   if (!s) return;
   (s.placed || []).forEach(p => addObject(p.type, p.lng, p.lat, p));
-  // older sessions stored only building points in `deleted`
   let h = s.history;
   if (!h && s.deleted) h = s.deleted.map(d => ({ kind: 'building', pt: Array.isArray(d) ? d : d && d.pt })).filter(e => e.pt);
   (h || []).forEach(e => {
-    // older entries held a single point (`pt`); newer ones hold the whole group (`pts`)
     if (e.kind === 'building' && !e.pts) e = { kind: 'building', pts: [e.pt] };
     history.push(e);
     if (e.kind === 'building') e.pts.forEach(p => deleted.push(p));
   });
   refreshBuildings();
-  updateCount();
 }
 
-// ---------- map setup ----------
+// ---------- Map Setup ----------
 map.on('load', () => {
   map.addSource('terrain', {
     type: 'raster-dem',
     tiles: ['https://s3.amazonaws.com/elevation-tiles-prod/terrarium/{z}/{x}/{y}.png'],
     encoding: 'terrarium', tileSize: 256, maxzoom: 14
   });
-  map.setTerrain({ source: 'terrain', exaggeration: 1 }); // keep 1 so heights match
+  map.setTerrain({ source: 'terrain', exaggeration: 1 });
 
-  // Light map: drop every text/icon layer except street names (no POIs, transit, place names).
   for (const layer of map.getStyle().layers) {
     if (layer.type === 'symbol' && layer['source-layer'] !== 'transportation_name') map.removeLayer(layer.id);
   }
 
-  // Some colour: blue water, green parks/grass/forest (Positron is all grey by default).
   map.setPaintProperty('water', 'fill-color', '#a9cfe6');
   map.setPaintProperty('waterway', 'line-color', '#a9cfe6');
   map.setPaintProperty('park', 'fill-color', '#cfe6c2');
@@ -618,7 +699,6 @@ map.on('load', () => {
     }
   });
 
-  // Our own building layer (one polygon per building part, filled by collectBuildings()).
   map.addSource('buildings-own', { type: 'geojson', data: EMPTY, tolerance: 0.1 });
   map.addLayer({
     id: 'buildings-own', type: 'fill-extrusion', source: 'buildings-own', minzoom: 14,
@@ -630,7 +710,6 @@ map.on('load', () => {
     }
   });
 
-  // Highlight for the selected building: its own geometry, drawn in orange in place of the base layer's copy.
   map.addSource('building-selected', { type: 'geojson', data: EMPTY });
   map.addLayer({
     id: 'buildings-selected', type: 'fill-extrusion', source: 'building-selected',
@@ -644,15 +723,13 @@ map.on('load', () => {
 
   map.addLayer(customLayer);
 
-  restoreSession();                       // bring back this session's trees/buildings/deletions
-  map.on('idle', refreshPlacedHeights);   // keep placed objects on the terrain
-  map.on('idle', collectBuildings);        // pick up building polygons from newly loaded tiles
+  restoreSession();
+  map.on('idle', refreshPlacedHeights);
+  map.on('idle', collectBuildings);
   collectBuildings();
   window.__app.ready = true;
   window.dispatchEvent(new Event('app-ready'));
 
-  // 'idle' fires every frame (the custom layer keeps repainting), so only do the heavy work
-  // after the view moved or new terrain / building tiles arrived.
   let viewStale = true;
   const markStale = () => { viewStale = true; };
   map.on('moveend', markStale);
@@ -660,95 +737,123 @@ map.on('load', () => {
   map.on('idle', () => {
     if (!viewStale) return;
     viewStale = false;
-    refreshPlacedHeights();   // keep placed objects on the terrain
-    collectBuildings();       // pick up building polygons from newly loaded tiles
+    refreshPlacedHeights();
+    collectBuildings();
     updateHighlight();
   });
 });
 
-// ---------- interaction ----------
+// ---------- UI & Interaction Bindings ----------
 const countEl = document.getElementById('count');
 function updateCount() {
   const t = placed.filter(p => p.type === 'tree').length;
   const b = placed.filter(p => p.type === 'building').length;
   let text = `Trees: ${t} | Buildings: ${b}`;
   if (cadastre) text += ` | Cadastre: ${cadastre.visibleCount.toLocaleString()} / ${cadastre.count.toLocaleString()} loaded`;
-  if (history.length) text += ` | Deleted: ${history.length}`;
+  if (history.length) text += ` | Deleted: ${new Set(history.map((h, i) => h.batch ? 'b' + h.batch : 'i' + i)).size}`;
   if (selected) {
-    text += ` | Selected: ${{ building: 'building', tree: 'cadastre tree', placed: 'placed object' }[selected.kind]}`;
-    if (selected.kind === 'building' && selected.group.length > 1) text += ` (${selected.group.length} parts)`;
+    const nb = selected.buildings.length;
+    const nt = selected.trees.length;
+    const np = selected.placed.length;
+    text += ` | Selected: ${nb} bldg, ${nt} trees, ${np} placed`;
   }
-  if (countEl.textContent !== text) countEl.textContent = text;
+  countEl.innerText = text;
 }
-setInterval(updateCount, 250);
 
+// Mode Buttons
+document.getElementById('btnTree').onclick = () => { mode = 'tree'; updateActiveBtn('btnTree'); map.dragPan.enable(); };
+document.getElementById('btnBuilding').onclick = () => { mode = 'building'; updateActiveBtn('btnBuilding'); map.dragPan.enable(); };
+document.getElementById('btnNav').onclick = () => { mode = 'nav'; updateActiveBtn('btnNav'); map.dragPan.enable(); };
+document.getElementById('btnInspect').onclick = () => { mode = 'inspect'; updateActiveBtn('btnInspect'); map.dragPan.enable(); };
+document.getElementById('btnSelect').onclick = () => { mode = 'select'; updateActiveBtn('btnSelect'); };
+document.getElementById('btnDelete').onclick = () => { deleteSelected(); };
+document.getElementById('btnRestore').onclick = () => { restoreLastDeleted(); };
+document.getElementById('btnUndo').onclick = () => { restoreLastDeleted(); };
+
+function updateActiveBtn(id) {
+  ['btnTree', 'btnBuilding', 'btnNav', 'btnInspect', 'btnSelect'].forEach(bid => {
+    document.getElementById(bid).classList.toggle('active', bid === id);
+  });
+}
+
+// Selection Box overlay element
+const selBox = document.createElement('div');
+selBox.style.position = 'absolute';
+selBox.style.border = '2px dashed #ff9800';
+selBox.style.background = 'rgba(255, 152, 0, 0.15)';
+selBox.style.zIndex = '10';
+selBox.style.display = 'none';
+document.body.appendChild(selBox);
+
+let isDragging = false;
+let startPos = { x: 0, y: 0 };
+const mapContainer = map.getContainer();
+
+mapContainer.addEventListener('mousedown', (e) => {
+  if (mode !== 'select') return;
+  if (e.button !== 0) return; // Left click only
+  isDragging = true;
+  startPos = { x: e.clientX, y: e.clientY };
+  selBox.style.left = `${e.clientX}px`;
+  selBox.style.top = `${e.clientY}px`;
+  selBox.style.width = '0px';
+  selBox.style.height = '0px';
+  selBox.style.display = 'block';
+  map.dragPan.disable();
+});
+
+window.addEventListener('mousemove', (e) => {
+  if (!isDragging) return;
+  const x = Math.min(e.clientX, startPos.x);
+  const y = Math.min(e.clientY, startPos.y);
+  const w = Math.abs(e.clientX - startPos.x);
+  const h = Math.abs(e.clientY - startPos.y);
+  selBox.style.left = `${x}px`;
+  selBox.style.top = `${y}px`;
+  selBox.style.width = `${w}px`;
+  selBox.style.height = `${h}px`;
+});
+
+window.addEventListener('mouseup', (e) => {
+  if (!isDragging) return;
+  isDragging = false;
+  selBox.style.display = 'none';
+  map.dragPan.enable();
+
+  const x0 = Math.min(e.clientX, startPos.x);
+  const y0 = Math.min(e.clientY, startPos.y);
+  const x1 = Math.max(e.clientX, startPos.x);
+  const y1 = Math.max(e.clientY, startPos.y);
+
+  const additive = e.shiftKey || e.ctrlKey;
+
+  if (x1 - x0 < 4 && y1 - y0 < 4) {
+    // Single click selection
+    const rect = map.getCanvas().getBoundingClientRect();
+    selectAt({ x: e.clientX - rect.left, y: e.clientY - rect.top }, additive);
+  } else {
+    // Box selection
+    boxSelect(x0, y0, x1, y1, additive);
+  }
+});
+
+// Click action handling for placing items / inspecting
 map.on('click', (e) => {
-  if (mode === 'nav') return;
-  if (mode === 'inspect') {
-    const hit = cadastre && cadastre.inspect(e.lngLat);
-    if (hit) new maplibregl.Popup().setLngLat(hit.lngLat).setHTML(hit.html).addTo(map);
-    return;
-  }
-  if (mode === 'select') {
-    selectAt(e.point);
-    return;
-  }
-
-  const { lng, lat } = e.lngLat;
-  addObject(mode, lng, lat);
-  updateCount();
-  saveSession();
-});
-
-function setMode(m, btnId) {
-  mode = m;
-  document.querySelectorAll('#ui button').forEach(b => b.classList.remove('active'));
-  document.getElementById(btnId).classList.add('active');
-  if (m !== 'select' && selected) { selected = null; refreshSelection(); updateCount(); }
-}
-btnTree.onclick = () => setMode('tree', 'btnTree');
-btnBuilding.onclick = () => setMode('building', 'btnBuilding');
-btnNav.onclick = () => setMode('nav', 'btnNav');
-btnUndo.onclick = () => {
-  const last = placed.pop();
-  if (last) scene.remove(last.obj);
-  updateCount();
-  saveSession();
-};
-btnInspect.onclick = () => setMode('inspect', 'btnInspect');
-btnSelect.onclick = () => setMode('select', 'btnSelect');
-btnDelete.onclick = deleteSelected;
-btnRestore.onclick = restoreLastDeleted;
-document.addEventListener('keydown', (e) => {
-  if (mode === 'select' && (e.key === 'Delete' || e.key === 'Backspace')) {
-    e.preventDefault();
-    deleteSelected();
-  }
-});
-
-// Real trees from OpenStreetMap (free Overpass API), capped to keep it smooth
-btnOsm.onclick = async () => {
-  btnOsm.textContent = 'Loading...';
-  const c = map.getCenter();
-  const d = 0.004; // ~400 m box around the current view center
-  const q = `[out:json];node["natural"="tree"](${c.lat - d},${c.lng - d},${c.lat + d},${c.lng + d});out 1500;`;
-  try {
-    const res = await fetch('https://overpass-api.de/api/interpreter', {
-      method: 'POST', body: 'data=' + encodeURIComponent(q)
-    });
-    const data = await res.json();
-    data.elements.forEach(n => addObject('tree', n.lon, n.lat));
-    updateCount();
+  if (mode === 'select') return; // Handled by mouseup/mousedown
+  const lngLat = [e.lngLat.lng, e.lngLat.lat];
+  if (mode === 'tree') {
+    addObject('tree', lngLat[0], lngLat[1]);
     saveSession();
-    btnOsm.textContent = `Loaded ${data.elements.length} trees`;
-  } catch (err) {
-    console.error(err);
-    btnOsm.textContent = 'Failed, try again';
+  } else if (mode === 'building') {
+    addObject('building', lngLat[0], lngLat[1]);
+    saveSession();
+  } else if (mode === 'inspect' && cadastre) {
+    const res = cadastre.inspect(lngLat);
+    if (res) {
+      new maplibregl.Popup().setLngLat(res.lngLat).setHTML(res.html).addTo(map);
+    }
   }
-};
-window.__app = { map, placed, deleted, buildings, isDeleted, ready: false };
-updateCount();
-import { addComparisonCard } from './comparison-card.js'; addComparisonCard({ map, scene, placed, deleted });
+});
 </script>
 </body>
 </html>
