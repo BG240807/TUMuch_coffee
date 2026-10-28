@@ -200,14 +200,16 @@ const customLayer = {
 // ---------- map buildings: select / delete ----------
 // OpenFreeMap merges many buildings into one MultiPolygon feature per tile, so a layer filter
 // can only hide whole groups at once. Instead we copy every building polygon out of the tiles
-// into our own GeoJSON source (one polygon per building) and draw that. Deleting a building
-// just leaves its polygon out; it is remembered as one point inside the building.
+// into our own GeoJSON source (one polygon per building part) and draw that. Deleting a building
+// just leaves its polygons out; each is remembered as one point inside the polygon.
+// Large buildings (church, Experimenta, ...) consist of several touching parts, so selecting
+// one part selects the whole group of connected footprints, and delete / restore act on the group.
 const EMPTY = { type: 'FeatureCollection', features: [] };
 const buildings = new Map();  // key -> { poly, props, bbox, sbox, feature, pt, scene }
-const deleted = [];           // [[lng, lat], ...] one interior point per deleted building
-let selected = null;          // { kind: 'building', b } | { kind: 'tree', i } | { kind: 'placed', rec } | null
+const deleted = [];           // [[lng, lat], ...] one interior point per deleted building part
+let selected = null;          // { kind: 'building', b, group } | { kind: 'tree', i } | { kind: 'placed', rec } | null
 // Everything deleted this session, in order (so "Restore" can undo the latest one):
-// { kind: 'building', pt } | { kind: 'tree', i } (cadastre tree index) | { kind: 'placed', type, lng, lat, s, ci }
+// { kind: 'building', pts: [[lng, lat], ...] } | { kind: 'tree', i } (cadastre tree index) | { kind: 'placed', type, lng, lat, s, ci }
 const history = [];
 // translucent orange box that marks a selected tree / placed object
 const hl = new THREE.Mesh(
@@ -218,7 +220,7 @@ hl.visible = false;
 hl.renderOrder = 10;
 scene.add(hl);
 let tookOver = false;
-let nextBid = 1;              // unique id per building polygon, used to hide the selected one in the base layer
+let nextBid = 1;              // unique id per building polygon, used to hide the selected ones in the base layer
 
 // --- geometry helpers ---
 function ringArea(r) {
@@ -237,7 +239,8 @@ function pointInRing(pt, r) {
 function inPolygon(pt, poly) {
   return pointInRing(pt, poly[0]) && !poly.slice(1).some(h => pointInRing(pt, h));
 }
-// a point that is really inside the polygon (centroid, or a point between centroid and a corner)
+// a point that is really inside the polygon (centroid, a point between centroid and a corner,
+// or as a last resort a grid scan over the bounding box)
 function interiorPoint(poly) {
   const ring = poly[0];
   let A = 0, cx = 0, cy = 0;
@@ -250,7 +253,19 @@ function interiorPoint(poly) {
   if (Math.abs(A) < 1e-18) { cx = ring[0][0]; cy = ring[0][1]; }
   else { cx /= 3 * A; cy /= 3 * A; }
   const candidates = [[cx, cy], ...ring.map(v => [(v[0] + cx) / 2, (v[1] + cy) / 2])];
-  return candidates.find(c => inPolygon(c, poly)) || null;
+  const found = candidates.find(c => inPolygon(c, poly));
+  if (found) return found;
+
+  let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+  for (const [x, y] of ring) { x0 = Math.min(x0, x); x1 = Math.max(x1, x); y0 = Math.min(y0, y); y1 = Math.max(y1, y); }
+  const N = 12;
+  for (let i = 1; i < N; i++) {
+    for (let j = 1; j < N; j++) {
+      const p = [x0 + ((x1 - x0) * i) / N, y0 + ((y1 - y0) * j) / N];
+      if (inPolygon(p, poly)) return p;
+    }
+  }
+  return null;
 }
 
 // --- copy building polygons out of the loaded vector tiles ---
@@ -305,11 +320,15 @@ function refreshBuildings() {
 function refreshSelection() {
   const src = map.getSource('building-selected');
   const isBuilding = selected && selected.kind === 'building';
-  if (src) src.setData(isBuilding ? selected.b.feature : EMPTY);
-  // Hide the selected building in the base layer while it is highlighted. Two copies of the
+  if (src) src.setData(isBuilding
+    ? { type: 'FeatureCollection', features: selected.group.map(g => g.feature) }
+    : EMPTY);
+  // Hide the selected polygons in the base layer while they are highlighted. Two copies of the
   // same walls on top of each other flicker (z-fighting), which showed as orange stripes.
   if (map.getLayer('buildings-own')) {
-    map.setFilter('buildings-own', isBuilding ? ['!=', ['get', 'bid'], selected.b.props.bid] : null);
+    map.setFilter('buildings-own', isBuilding
+      ? ['!', ['in', ['get', 'bid'], ['literal', selected.group.map(g => g.props.bid)]]]
+      : null);
   }
   updateHighlight();
 }
@@ -354,10 +373,70 @@ function segBoxRange(ax, az, bx, bz, box) {
   }
   return [s0, s1];
 }
-function insideScene(b, p) {
+
+// footprint in scene metres (x = east, z = south), computed lazily
+function ensureScene(b) {
   if (!b.scene) b.scene = b.poly.map(r => r.map(([lng, lat]) => { const v = toScene(lng, lat, 0); return [v.x, v.z]; }));
-  return pointInRing(p, b.scene[0]) && !b.scene.slice(1).some(h => pointInRing(p, h));
+  return b.scene;
 }
+function insideScene(b, p) {
+  const s = ensureScene(b);
+  return pointInRing(p, s[0]) && !s.slice(1).some(h => pointInRing(p, h));
+}
+
+// --- grouping: building parts that touch or overlap belong together ---
+const TOUCH_EPS = 1.2;   // metres; tile coordinates are quantised to ~0.4 m and simplified, so shared walls can be ~1 m apart
+const MAX_GROUP = 300;   // safety cap so grouping can't spread across a whole city block
+
+function distPtSeg(p, a, b) {
+  const dx = b[0] - a[0], dz = b[1] - a[1], l2 = dx * dx + dz * dz;
+  let t = l2 ? ((p[0] - a[0]) * dx + (p[1] - a[1]) * dz) / l2 : 0;
+  t = Math.max(0, Math.min(1, t));
+  return Math.hypot(p[0] - a[0] - t * dx, p[1] - a[1] - t * dz);
+}
+function ringNear(pts, ring) {            // any vertex of pts within eps of ring's edges?
+  for (const p of pts)
+    for (let i = 0; i < ring.length - 1; i++)
+      if (distPtSeg(p, ring[i], ring[i + 1]) <= TOUCH_EPS) return true;
+  return false;
+}
+function segsCross(a, b, c, d) {
+  const o = (p, q, r) => (q[0] - p[0]) * (r[1] - p[1]) - (q[1] - p[1]) * (r[0] - p[0]);
+  return (o(a, b, c) > 0) !== (o(a, b, d) > 0) && (o(c, d, a) > 0) !== (o(c, d, b) > 0);
+}
+function footprintsTouch(a, b) {
+  const A = ensureScene(a)[0], B = ensureScene(b)[0];
+  if (A.some(p => pointInRing(p, B)) || B.some(p => pointInRing(p, A))) return true; // overlap / containment
+  if (ringNear(A, B) || ringNear(B, A)) return true;                                 // shared edge or corner
+  for (let i = 0; i < A.length - 1; i++)                                             // crossing edges
+    for (let j = 0; j < B.length - 1; j++)
+      if (segsCross(A[i], A[i + 1], B[j], B[j + 1])) return true;
+  return false;
+}
+function connectedGroup(start) {
+  const group = [start], seen = new Set([start.key]);
+  for (let i = 0; i < group.length && group.length < MAX_GROUP; i++) {
+    const s = group[i].sbox;
+    for (const b of buildings.values()) {
+      if (seen.has(b.key)) continue;
+      const t = b.sbox;
+      if (t[1] < s[0] - TOUCH_EPS || t[0] > s[1] + TOUCH_EPS || t[3] < s[2] - TOUCH_EPS || t[2] > s[3] + TOUCH_EPS) continue;
+      if (isDeleted(b) || !footprintsTouch(group[i], b)) continue;
+      seen.add(b.key);
+      group.push(b);
+    }
+  }
+  return group;
+}
+// the polygons that get selected / deleted together; each needs an interior point to be deletable
+function groupFor(b) {
+  const group = connectedGroup(b);
+  for (const g of group) if (!g.pt) g.pt = interiorPoint(g.poly);
+  const usable = group.filter(g => g.pt);
+  if (usable.length !== group.length) console.warn('[group] parts without interior point:', group.length - usable.length);
+  return usable;
+}
+
 function pickBuilding(point, ray) {
   const { o, d } = ray;
   if (d.y > -1e-4) return null;
@@ -397,6 +476,7 @@ function placedBox(obj, box) {
   return box;
 }
 function selectAt(point) {
+  collectBuildings(); // pick up polygons from tiles that loaded since the last idle event
   const ray = pickRay(point);
   let best = null; // nearest hit along the ray wins
   const consider = (t, sel) => { if (!best || t < best.t) best = { t, sel }; };
@@ -417,8 +497,9 @@ function selectAt(point) {
 
   selected = best ? best.sel : null;
   if (selected && selected.kind === 'building') {
-    if (!selected.b.pt) selected.b.pt = interiorPoint(selected.b.poly);
-    if (!selected.b.pt) selected = null;
+    selected.group = groupFor(selected.b);
+    if (!selected.group.includes(selected.b)) selected = null;
+    else console.info('[group]', selected.group.length, selected.group.map(g => g.key));
   }
   console.info('[select]', { kind: selected && selected.kind, distance: best && best.t });
   refreshSelection();
@@ -428,8 +509,9 @@ function selectAt(point) {
 function deleteSelected() {
   if (!selected) return;
   if (selected.kind === 'building') {
-    deleted.push(selected.b.pt);
-    history.push({ kind: 'building', pt: selected.b.pt });
+    const pts = selected.group.map(g => g.pt);
+    pts.forEach(p => deleted.push(p));
+    history.push({ kind: 'building', pts });
     refreshBuildings();
   } else if (selected.kind === 'tree') {
     cadastre.hide(selected.i);
@@ -449,8 +531,10 @@ function restoreLastDeleted() {
   const h = history.pop();
   if (!h) return;
   if (h.kind === 'building') {
-    const k = deleted.findIndex(p => p[0] === h.pt[0] && p[1] === h.pt[1]);
-    if (k >= 0) deleted.splice(k, 1);
+    for (const pt of h.pts) {
+      const k = deleted.findIndex(p => p[0] === pt[0] && p[1] === pt[1]);
+      if (k >= 0) deleted.splice(k, 1);
+    }
     refreshBuildings();
   } else if (h.kind === 'tree') {
     if (cadastre) cadastre.show(h.i);
@@ -479,7 +563,12 @@ function restoreSession() {
   // older sessions stored only building points in `deleted`
   let h = s.history;
   if (!h && s.deleted) h = s.deleted.map(d => ({ kind: 'building', pt: Array.isArray(d) ? d : d && d.pt })).filter(e => e.pt);
-  (h || []).forEach(e => { history.push(e); if (e.kind === 'building') deleted.push(e.pt); });
+  (h || []).forEach(e => {
+    // older entries held a single point (`pt`); newer ones hold the whole group (`pts`)
+    if (e.kind === 'building' && !e.pts) e = { kind: 'building', pts: [e.pt] };
+    history.push(e);
+    if (e.kind === 'building') e.pts.forEach(p => deleted.push(p));
+  });
   refreshBuildings();
   updateCount();
 }
@@ -527,7 +616,7 @@ map.on('load', () => {
     }
   });
 
-  // Our own building layer (one polygon per building, filled by collectBuildings()).
+  // Our own building layer (one polygon per building part, filled by collectBuildings()).
   map.addSource('buildings-own', { type: 'geojson', data: EMPTY, tolerance: 0.1 });
   map.addLayer({
     id: 'buildings-own', type: 'fill-extrusion', source: 'buildings-own', minzoom: 14,
@@ -577,7 +666,10 @@ function updateCount() {
   let text = `Trees: ${t} | Buildings: ${b}`;
   if (cadastre) text += ` | Cadastre: ${cadastre.visibleCount.toLocaleString()} / ${cadastre.count.toLocaleString()} loaded`;
   if (history.length) text += ` | Deleted: ${history.length}`;
-  if (selected) text += ` | Selected: ${{ building: 'building', tree: 'cadastre tree', placed: 'placed object' }[selected.kind]}`;
+  if (selected) {
+    text += ` | Selected: ${{ building: 'building', tree: 'cadastre tree', placed: 'placed object' }[selected.kind]}`;
+    if (selected.kind === 'building' && selected.group.length > 1) text += ` (${selected.group.length} parts)`;
+  }
   if (countEl.textContent !== text) countEl.textContent = text;
 }
 setInterval(updateCount, 250);
