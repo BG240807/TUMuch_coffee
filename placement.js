@@ -484,15 +484,41 @@ function setTip(text, ok, point) {
 function ghostRing(type, p) {
   if (type === 'tree') return Array.from({ length: 21 }, (_, i) => [p[0] + 3 * Math.cos((i / 20) * 2 * Math.PI), p[1] + 3 * Math.sin((i / 20) * 2 * Math.PI)]);
   const spec = getBuildingSpec();
-  const w = spec.w || 16, d = spec.d || 12, rot = spec.rot || 0;
-  const hw = w / 2, hd = d / 2;
+  const rot = spec.rot || 0;
+  const layout = spec.layout || 'single';
   const rad = (rot * Math.PI) / 180;
   const cos = Math.cos(rad), sin = Math.sin(rad);
-  const corners = [[-hw, -hd], [hw, -hd], [hw, hd], [-hw, hd], [-hw, -hd]];
-  return corners.map(([dx, dy]) => [
+  const rotPt = ([dx, dy]) => [
     p[0] + dx * cos - dy * sin,
     p[1] + dx * sin + dy * cos
-  ]);
+  ];
+
+  if (layout === 'L-wing') {
+    const W = spec.w || 16, D = spec.d || 12;
+    const T = Math.max(5, Math.round(Math.min(W, D) * 0.45));
+    const corners = [
+      [-W / 2, -D / 2],
+      [W / 2, -D / 2],
+      [W / 2, -D / 2 + T],
+      [-W / 2 + T, -D / 2 + T],
+      [-W / 2 + T, D / 2],
+      [-W / 2, D / 2],
+      [-W / 2, -D / 2]
+    ];
+    return corners.map(rotPt);
+  }
+
+  if (layout === 'courtyard' || layout === 'eco-complex') {
+    const W = Math.max(22, spec.w || 16), D = Math.max(18, spec.d || 12);
+    const hw = W / 2, hd = D / 2;
+    const corners = [[-hw, -hd], [hw, -hd], [hw, hd], [-hw, hd], [-hw, -hd]];
+    return corners.map(rotPt);
+  }
+
+  const w = spec.w || 16, d = spec.d || 12;
+  const hw = w / 2, hd = d / 2;
+  const corners = [[-hw, -hd], [hw, -hd], [hw, hd], [-hw, hd], [-hw, -hd]];
+  return corners.map(rotPt);
 }
 // a see-through 3D tree or building at the cursor (same shapes as in index.html), green or red
 let ghost3d = null;
@@ -503,10 +529,7 @@ function makeGhost3d() {
   tree.add(new THREE.Mesh(new THREE.CylinderGeometry(0.25, 0.4, 4, 6).translate(0, 2, 0), wallMat),
     new THREE.Mesh(new THREE.IcosahedronGeometry(3, 1).scale(1, 1.2, 1).translate(0, 6, 0), wallMat));
   tree.scale.setScalar(1.2);
-  const bGeom = new THREE.BoxGeometry(1, 1, 1);
-  bGeom.translate(0, 0.5, 0);
-  const bMats = [wallMat, wallMat, roofMat, wallMat, wallMat, wallMat];
-  const building = new THREE.Mesh(bGeom, bMats);
+  const building = new THREE.Group();
   tree.visible = building.visible = false;
   app.scene.add(tree, building);
   return { tree, building, mat: wallMat, roofMat };
@@ -518,10 +541,58 @@ function showGhost(type, pt, reason, point) {
   const obj = ghost3d[type], other = ghost3d[type === 'tree' ? 'building' : 'tree'];
   if (type === 'building') {
     const spec = getBuildingSpec();
-    const w = spec.w || 16, d = spec.d || 12, floors = spec.floors || 4, rot = spec.rot || 0;
-    const roofType = spec.roofType || 'standard';
+    const floors = spec.floors || 4, rot = spec.rot || 0;
+    const layout = spec.layout || 'single';
+    const roofType = layout === 'eco-complex' ? 'green' : (spec.roofType || 'standard');
     const h = floors * 3.2;
-    obj.scale.set(w, h, d);
+    const wallMat = ghost3d.mat, roofMat = ghost3d.roofMat;
+    const bMats = [wallMat, wallMat, roofMat, wallMat, wallMat, wallMat];
+
+    while (obj.children.length) obj.remove(obj.children[0]);
+
+    if (layout === 'L-wing') {
+      const W = spec.w || 16, D = spec.d || 12;
+      const T = Math.max(5, Math.round(Math.min(W, D) * 0.45));
+      const m1 = new THREE.Mesh(new THREE.BoxGeometry(W, h, T), bMats);
+      m1.position.set(0, h / 2, -D / 2 + T / 2);
+      const D2 = D - T;
+      const m2 = new THREE.Mesh(new THREE.BoxGeometry(T, h, D2), bMats);
+      m2.position.set(-W / 2 + T / 2, h / 2, T / 2);
+      obj.add(m1, m2);
+    } else if (layout === 'courtyard' || layout === 'eco-complex') {
+      const W = Math.max(22, spec.w || 16), D = Math.max(18, spec.d || 12);
+      const T = Math.max(5, Math.round(Math.min(W, D) * 0.28));
+      const D_side = D - 2 * T;
+      const mN = new THREE.Mesh(new THREE.BoxGeometry(W, h, T), bMats);
+      mN.position.set(0, h / 2, -D / 2 + T / 2);
+      const mS = new THREE.Mesh(new THREE.BoxGeometry(W, h, T), bMats);
+      mS.position.set(0, h / 2, D / 2 - T / 2);
+      const mW = new THREE.Mesh(new THREE.BoxGeometry(T, h, D_side), bMats);
+      mW.position.set(-W / 2 + T / 2, h / 2, 0);
+      const mE = new THREE.Mesh(new THREE.BoxGeometry(T, h, D_side), bMats);
+      mE.position.set(W / 2 - T / 2, h / 2, 0);
+      obj.add(mN, mS, mW, mE);
+
+      if (layout === 'eco-complex') {
+        const trunkGeom = new THREE.CylinderGeometry(0.2, 0.3, 3, 6);
+        trunkGeom.translate(0, 1.5, 0);
+        const folGeom = new THREE.IcosahedronGeometry(2.2, 1);
+        folGeom.translate(0, 4.5, 0);
+        const t1 = new THREE.Group();
+        t1.add(new THREE.Mesh(trunkGeom, wallMat), new THREE.Mesh(folGeom, wallMat));
+        t1.position.set(-Math.round((W - 2 * T) * 0.25), 0, 0);
+        const t2 = new THREE.Group();
+        t2.add(new THREE.Mesh(trunkGeom, wallMat), new THREE.Mesh(folGeom, wallMat));
+        t2.position.set(Math.round((W - 2 * T) * 0.25), 0, 0);
+        obj.add(t1, t2);
+      }
+    } else {
+      const w = spec.w || 16, d = spec.d || 12;
+      const m = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), bMats);
+      m.position.set(0, h / 2, 0);
+      obj.add(m);
+    }
+
     obj.rotation.y = (rot * Math.PI) / 180;
     const roofColor = roofType === 'green' ? 0x2e7d32 : roofType === 'solar' ? 0x1565c0 : 0xefece6;
     ghost3d.roofMat.color.set(reason ? 0xe53935 : roofColor);
@@ -548,6 +619,19 @@ function say(html) { info.innerHTML = html; info.style.display = html ? 'block' 
 let lastCursorLL = null;
 let lastCursorPoint = null;
 
+const LAYOUTS = ['single', 'L-wing', 'courtyard', 'eco-complex'];
+function cycleBuildingLayout() {
+  const spec = getBuildingSpec();
+  const current = spec.layout || 'single';
+  const idx = LAYOUTS.indexOf(current);
+  const next = LAYOUTS[(idx + 1) % LAYOUTS.length];
+  spec.layout = next;
+  if (next === 'eco-complex') spec.roofType = 'green';
+  if (window.__app) window.__app.buildingSpec = spec;
+  updateBuildingPill();
+  refreshGhostBuilding();
+}
+
 function cycleRoofType() {
   const spec = getBuildingSpec();
   const next = spec.roofType === 'standard' ? 'green' : spec.roofType === 'green' ? 'solar' : 'standard';
@@ -560,9 +644,18 @@ function cycleRoofType() {
 function updateBuildingPill() {
   if (placeType() !== 'building' || tool || brush) return;
   const spec = getBuildingSpec();
+  const layout = spec.layout || 'single';
+  const layoutLabels = {
+    'single': '🏛️ Single (C)',
+    'L-wing': '🏢 L-wing (C)',
+    'courtyard': '🏬 Courtyard (C)',
+    'eco-complex': '🌿 Eco-complex (C)'
+  };
+  const layoutBadge = layoutLabels[layout] || '🏛️ Single (C)';
   const roof = spec.roofType || 'standard';
   const roofBadge = roof === 'green' ? '🌱 Green roof' : roof === 'solar' ? '☀️ Solar roof' : '🏢 Standard roof';
   const html = `🏢 <b>${spec.w}×${spec.d} m · ${spec.floors} fl · ${spec.rot}°</b> ` +
+    `<button id="bld-layout" title="Cycle layout (single → L-wing → courtyard → eco-complex, shortcut: C)">${layoutBadge}</button> ` +
     `<button id="bld-roof" title="Cycle roof type (standard → green → solar, shortcut: G)">${roofBadge} (G)</button> ` +
     `<button id="bld-rot" title="Rotate 15° (shortcut: R or [ / ])">↻ Rotate (R)</button> ` +
     `<span style="margin-left:3px;font-size:11px;color:#64748b">W</span><button id="bld-w-dec" title="Narrower">−</button><button id="bld-w-inc" title="Wider">+</button> ` +
@@ -570,6 +663,7 @@ function updateBuildingPill() {
     `<span style="margin-left:3px;font-size:11px;color:#64748b">Floors</span><button id="bld-fl-dec" title="Fewer floors (−)">−</button><button id="bld-fl-inc" title="More floors (+)">+</button>`;
   say(html);
 
+  document.getElementById('bld-layout')?.addEventListener('click', cycleBuildingLayout);
   document.getElementById('bld-roof')?.addEventListener('click', cycleRoofType);
   document.getElementById('bld-rot')?.addEventListener('click', () => adjustBuilding({ rot: 15 }));
   document.getElementById('bld-w-dec')?.addEventListener('click', () => adjustBuilding({ dw: -2 }));
@@ -1346,6 +1440,11 @@ function init() {
     if (e.metaKey || e.ctrlKey || e.altKey) return;
 
     if (placeType() === 'building' && !tool && !brush) {
+      if (e.key === 'c' || e.key === 'C') {
+        e.preventDefault();
+        cycleBuildingLayout();
+        return;
+      }
       if (e.key === 'g' || e.key === 'G') {
         e.preventDefault();
         cycleRoofType();
@@ -1444,6 +1543,7 @@ window.placement = {
   },
   undoCarFree,
   resetAreas,
+  cycleBuildingLayout,
   allow(type, e) {
     if (!map) return true;
     const pt = [e.lngLat.lng, e.lngLat.lat];

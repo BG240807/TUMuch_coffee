@@ -120,7 +120,7 @@
 import * as THREE from 'three';
 
 window.__app = window.__app || {};
-window.__app.buildingSpec = window.__app.buildingSpec || { w: 16, d: 12, floors: 4, rot: 0, roofType: 'standard' };
+window.__app.buildingSpec = window.__app.buildingSpec || { w: 16, d: 12, floors: 4, rot: 0, roofType: 'standard', layout: 'single' };
 const retrofitted = window.__app.retrofitted || {};
 window.__app.retrofitted = retrofitted;
 window.__app.carFreeLines = window.__app.carFreeLines || [];
@@ -212,11 +212,14 @@ function windowTexture() {
 const baseWinTex = windowTexture();
 
 function makeBuilding(lng, lat, opts = {}) {
-  const spec = window.__app?.buildingSpec || { w: 16, d: 12, floors: 4, rot: 0 };
+  const spec = window.__app?.buildingSpec || { w: 16, d: 12, floors: 4, rot: 0, roofType: 'standard', layout: 'single' };
   let w = opts.w ?? spec.w ?? 16;
   let d = opts.d ?? spec.d ?? 12;
   let floors = opts.floors ?? spec.floors ?? 4;
   let rot = opts.rot ?? spec.rot ?? 0;
+  let layout = opts.layout ?? spec.layout ?? 'single';
+  let roofType = opts.roofType ?? (layout === 'eco-complex' ? 'green' : (spec.roofType ?? 'standard'));
+
   if (typeof opts === 'number') {
     w = opts;
     if (typeof arguments[3] === 'number') d = arguments[3];
@@ -229,18 +232,90 @@ function makeBuilding(lng, lat, opts = {}) {
     t.repeat.set(Math.max(1, Math.round(repeatX / 4)), floors);
     return new THREE.MeshLambertMaterial({ map: t });
   };
-  const roofType = opts.roofType ?? spec.roofType ?? 'standard';
   const roofColor = roofType === 'green' ? 0x2e7d32 : roofType === 'solar' ? 0x1565c0 : 0xefece6;
   const roof = new THREE.MeshLambertMaterial({ color: roofColor });
   const bottom = new THREE.MeshLambertMaterial({ color: 0xe8e4dc });
-  // order: +x, -x, +y, -y, +z, -z
+
+  if (layout === 'L-wing') {
+    const group = new THREE.Group();
+    const W = w, D = d;
+    const T = Math.max(5, Math.round(Math.min(W, D) * 0.45));
+    const mats1 = [side(T), side(T), roof, bottom, side(W), side(W)];
+    const m1 = new THREE.Mesh(new THREE.BoxGeometry(W, h, T), mats1);
+    m1.position.set(0, h / 2, -D / 2 + T / 2);
+    group.add(m1);
+    const D2 = D - T;
+    const mats2 = [side(D2), side(D2), roof, bottom, side(T), side(T)];
+    const m2 = new THREE.Mesh(new THREE.BoxGeometry(T, h, D2), mats2);
+    m2.position.set(-W / 2 + T / 2, h / 2, T / 2);
+    group.add(m2);
+
+    group.rotation.y = (rot * Math.PI) / 180;
+    const p = toScene(lng, lat, groundAt(lng, lat));
+    group.position.set(p.x, p.y, p.z);
+    const area = W * T + D2 * T;
+    group.userData = {
+      w: W, d: D, floors, rot, roofType, layout,
+      lift: 0,
+      hx: W / 2, hz: D / 2,
+      y0: 0, y1: h,
+      area
+    };
+    return group;
+  }
+
+  if (layout === 'courtyard' || layout === 'eco-complex') {
+    const group = new THREE.Group();
+    const W = Math.max(22, w), D = Math.max(18, d);
+    const T = Math.max(5, Math.round(Math.min(W, D) * 0.28));
+    const D_side = D - 2 * T;
+    const matsN = [side(T), side(T), roof, bottom, side(W), side(W)];
+    const mN = new THREE.Mesh(new THREE.BoxGeometry(W, h, T), matsN);
+    mN.position.set(0, h / 2, -D / 2 + T / 2);
+    group.add(mN);
+    const matsS = [side(T), side(T), roof, bottom, side(W), side(W)];
+    const mS = new THREE.Mesh(new THREE.BoxGeometry(W, h, T), matsS);
+    mS.position.set(0, h / 2, D / 2 - T / 2);
+    group.add(mS);
+    const matsW = [side(D_side), side(D_side), roof, bottom, side(T), side(T)];
+    const mW = new THREE.Mesh(new THREE.BoxGeometry(T, h, D_side), matsW);
+    mW.position.set(-W / 2 + T / 2, h / 2, 0);
+    group.add(mW);
+    const matsE = [side(D_side), side(D_side), roof, bottom, side(T), side(T)];
+    const mE = new THREE.Mesh(new THREE.BoxGeometry(T, h, D_side), matsE);
+    mE.position.set(W / 2 - T / 2, h / 2, 0);
+    group.add(mE);
+
+    if (layout === 'eco-complex') {
+      const tree1 = makeTree(lng, lat, 0.75, 1);
+      tree1.position.set(-Math.round((W - 2 * T) * 0.25), 0, 0);
+      const tree2 = makeTree(lng, lat, 0.75, 2);
+      tree2.position.set(Math.round((W - 2 * T) * 0.25), 0, 0);
+      group.add(tree1, tree2);
+    }
+
+    group.rotation.y = (rot * Math.PI) / 180;
+    const p = toScene(lng, lat, groundAt(lng, lat));
+    group.position.set(p.x, p.y, p.z);
+    const area = W * D - (W - 2 * T) * (D - 2 * T);
+    group.userData = {
+      w: W, d: D, floors, rot, roofType, layout,
+      lift: 0,
+      hx: W / 2, hz: D / 2,
+      y0: 0, y1: h,
+      area
+    };
+    return group;
+  }
+
+  // Single building
   const mats = [side(d), side(d), roof, bottom, side(w), side(w)];
   const mesh = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), mats);
   mesh.rotation.y = (rot * Math.PI) / 180;
   const p = toScene(lng, lat, groundAt(lng, lat));
   mesh.position.set(p.x, p.y + h / 2, p.z);
   mesh.userData = {
-    w, d, floors, rot, roofType,
+    w, d, floors, rot, roofType, layout: 'single',
     lift: h / 2,
     hx: w / 2, hz: d / 2,
     y0: 0, y1: h,
@@ -257,7 +332,27 @@ function addObject(type, lng, lat, saved = {}) {
     obj.visible = false;
   }
   scene.add(obj);
-  placed.push({ obj, type, lng, lat });
+  const entry = { obj, type, lng, lat };
+  placed.push(entry);
+
+  if (type === 'building' && bOpts.layout === 'eco-complex' && !saved.skipCourtyardTrees) {
+    const W = Math.max(22, bOpts.w || 16), D = Math.max(18, bOpts.d || 12);
+    const T = Math.max(5, Math.round(Math.min(W, D) * 0.28));
+    const offset = Math.round((W - 2 * T) * 0.25);
+    const rad = ((bOpts.rot || 0) * Math.PI) / 180;
+    const cos = Math.cos(rad), sin = Math.sin(rad);
+    const MLAT = 111132.954;
+    const MLNG = MLAT * Math.cos((lat * Math.PI) / 180);
+    const t1Lng = lng + (-offset * cos) / MLNG, t1Lat = lat + (-offset * sin) / MLAT;
+    const t2Lng = lng + (offset * cos) / MLNG, t2Lat = lat + (offset * sin) / MLAT;
+    const t1Obj = addObject('tree', t1Lng, t1Lat, { skipCourtyardTrees: true, s: 0.85 });
+    const t2Obj = addObject('tree', t2Lng, t2Lat, { skipCourtyardTrees: true, s: 0.85 });
+    const t1Entry = placed.find(p => p.obj === t1Obj);
+    const t2Entry = placed.find(p => p.obj === t2Obj);
+    if (!history) history = [];
+    history.push({ kind: 'eco-complex', building: entry, trees: [t1Entry, t2Entry].filter(Boolean) });
+  }
+
   return obj;
 }
 
@@ -809,6 +904,14 @@ function restoreEntry(h) {
       }
     }
     refreshBuildings();
+  } else if (h.kind === 'eco-complex') {
+    for (const t of (h.trees || [])) {
+      const idx = placed.indexOf(t);
+      if (idx >= 0) { scene.remove(t.obj); placed.splice(idx, 1); }
+    }
+    const bIdx = placed.indexOf(h.building);
+    if (bIdx >= 0) { scene.remove(h.building.obj); placed.splice(bIdx, 1); }
+    refreshBuildings();
   }
 }
 function restoreLastDeleted() {
@@ -836,7 +939,9 @@ function saveSession() {
         d: p.obj.userData?.d,
         floors: p.obj.userData?.floors,
         rot: p.obj.userData?.rot,
-        roofType: p.obj.userData?.roofType || 'standard'
+        roofType: p.obj.userData?.roofType || 'standard',
+        layout: p.obj.userData?.layout || 'single',
+        skipCourtyardTrees: true
       })),
       history,
       retrofitted,
@@ -1079,7 +1184,7 @@ btnTree.onclick = () => setMode('tree', 'btnTree');
 btnBuilding.onclick = () => setMode('building', 'btnBuilding');
 btnNav.onclick = () => setMode('nav', 'btnNav');
 btnUndo.onclick = () => {
-  if (history.length && (history[history.length - 1].kind === 'retrofit' || history[history.length - 1].kind === 'carfree')) {
+  if (history.length && (history[history.length - 1].kind === 'retrofit' || history[history.length - 1].kind === 'carfree' || history[history.length - 1].kind === 'eco-complex')) {
     restoreLastDeleted();
     return;
   }

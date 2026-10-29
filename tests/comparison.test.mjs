@@ -318,6 +318,55 @@ test('scenario comparison in the real editor', { timeout: 480000 }, async (t) =>
     assert.equal(placedAfterReset, 0, 'Reset city should clear all placed objects');
   });
 
+  await t.test('Phase 4: building complexes layouts (single, L-wing, courtyard, eco-complex), ghost, and footprint', async () => {
+    await page.locator('#btnBuilding').click();
+    await page.waitForFunction(() => document.getElementById('bld-layout') !== null);
+
+    let layout = await page.evaluate(() => window.__app.buildingSpec.layout);
+    assert.equal(layout, 'single');
+
+    await page.keyboard.press('c');
+    layout = await page.evaluate(() => window.__app.buildingSpec.layout);
+    assert.equal(layout, 'L-wing');
+
+    await page.keyboard.press('c');
+    layout = await page.evaluate(() => window.__app.buildingSpec.layout);
+    assert.equal(layout, 'courtyard');
+
+    await page.keyboard.press('c');
+    layout = await page.evaluate(() => window.__app.buildingSpec.layout);
+    assert.equal(layout, 'eco-complex');
+    const roofType = await page.evaluate(() => window.__app.buildingSpec.roofType);
+    assert.equal(roofType, 'green', 'Eco-complex should automatically feature a green roof');
+
+    const bldCountBefore = await page.evaluate(() => window.editor.placed.filter(p => p.type === 'building').length);
+    const treesBefore = await page.evaluate(() => window.editor.placed.filter(p => p.type === 'tree').length);
+    await page.evaluate(() => window.__app.addObject('building', 9.214, 49.144));
+
+    const bldCountAfter = await page.evaluate(() => window.editor.placed.filter(p => p.type === 'building').length);
+    const treesAfter = await page.evaluate(() => window.editor.placed.filter(p => p.type === 'tree').length);
+    assert.equal(bldCountAfter, bldCountBefore + 1, 'Building count should increase by 1');
+    assert.ok(treesAfter > treesBefore, 'Courtyard trees should be automatically planted');
+
+    await page.waitForFunction(() => {
+      const s = [...document.querySelectorAll('#comparison-card tbody tr td:last-child')].map(e => e.textContent);
+      return s[4] && s[4] !== '0 m²';
+    }, { timeout: 15000 });
+
+    await page.locator('#btnUndo').click();
+    await page.waitForFunction(() => {
+      const s = [...document.querySelectorAll('#comparison-card tbody tr td:last-child')].map(e => e.textContent);
+      return s[4] === '0 m²';
+    }, { timeout: 15000 });
+    const bldCountUndone = await page.evaluate(() => window.editor.placed.filter(p => p.type === 'building').length);
+    const treesUndone = await page.evaluate(() => window.editor.placed.filter(p => p.type === 'tree').length);
+    assert.equal(bldCountUndone, bldCountBefore, 'Undo should remove eco-complex building');
+    assert.equal(treesUndone, treesBefore, 'Undo should remove courtyard trees');
+
+    await page.keyboard.press('c');
+    assert.equal(await page.evaluate(() => window.__app.buildingSpec.layout), 'single');
+  });
+
   await t.test('comparison buttons work by keyboard and repeated switching never saves', async () => {
     const saved = await stored();
     await original.focus();
