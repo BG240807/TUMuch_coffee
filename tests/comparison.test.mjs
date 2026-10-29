@@ -296,11 +296,14 @@ test('scenario comparison in the real editor', { timeout: 480000 }, async (t) =>
     await page.keyboard.press('8');
     assert.equal(await page.locator('#btnCarFree').evaluate(el => el.classList.contains('active')), true);
 
-    // 2. Hotspots pill
-    const hotspotPill = page.locator('#hotspot-pill');
-    assert.equal(await hotspotPill.isVisible(), true);
-    await page.locator('#btnHotspot-neckarbogen').click();
+    // 2. Hotspots menu
+    const hotspotBtn = page.locator('#hotspot-btn');
+    assert.equal(await hotspotBtn.isVisible(), true);
+    await hotspotBtn.click({ force: true });
+    assert.equal(await page.locator('#hotspot-menu').isVisible(), true);
+    await page.locator('#btnHotspot-neckarbogen').click({ force: true });
     assert.equal(await page.locator('#btnHotspot-neckarbogen').getAttribute('aria-pressed'), 'true');
+    assert.equal(await page.locator('#hotspot-menu').isHidden(), true, 'Hotspot menu closes after picking a spot');
 
     // 3. Reset city back to baseline
     await page.evaluate(() => window.__app.addObject('tree', 9.215, 49.143));
@@ -308,8 +311,9 @@ test('scenario comparison in the real editor', { timeout: 480000 }, async (t) =>
       const s = [...document.querySelectorAll('#comparison-card tbody tr td:last-child')].map(e => e.textContent);
       return s[0] !== '0';
     });
+    await hotspotBtn.click({ force: true });
     page.once('dialog', dialog => dialog.accept());
-    await page.locator('#btnResetCity').click();
+    await page.locator('#btnResetCity').click({ force: true });
     await page.waitForFunction(() => {
       const s = [...document.querySelectorAll('#comparison-card tbody tr td:last-child')].map(e => e.textContent);
       return s[0] === '0' && s[1] === '0' && s[2] === '0' && s[3] === '0.0 m²' && s[8] === '0 m';

@@ -613,7 +613,24 @@ function hideGhost() {
 }
 const activeTool = () => document.querySelector('#ui button.active')?.id;
 const placeType = () => ({ btnTree: 'tree', btnBuilding: 'building' })[activeTool()];
-function say(html) { info.innerHTML = html; info.style.display = html ? 'block' : 'none'; }
+function syncLayout() {
+  const apply = () => {
+    const ui = document.getElementById('ui');
+    if (ui && info) info.style.top = `${ui.offsetTop + ui.offsetHeight + 8}px`;
+    const cc = document.getElementById('comparison-card');
+    if (cc && ui) {
+      const baseTop = ui.offsetTop + ui.offsetHeight + 10;
+      if (info && info.style.display !== 'none' && window.innerWidth < 1100) {
+        cc.style.top = `${info.offsetTop + info.offsetHeight + 8}px`;
+      } else {
+        cc.style.top = `${baseTop}px`;
+      }
+    }
+  };
+  apply();
+  requestAnimationFrame(apply);
+}
+function say(html) { info.innerHTML = html; info.style.display = html ? 'flex' : 'none'; syncLayout(); }
 
 // ---------- Building interactive controls pill & live adjustment ----------
 let lastCursorLL = null;
@@ -654,13 +671,13 @@ function updateBuildingPill() {
   const layoutBadge = layoutLabels[layout] || '🏛️ Single (C)';
   const roof = spec.roofType || 'standard';
   const roofBadge = roof === 'green' ? '🌱 Green roof' : roof === 'solar' ? '☀️ Solar roof' : '🏢 Standard roof';
-  const html = `🏢 <b>${spec.w}×${spec.d} m · ${spec.floors} fl · ${spec.rot}°</b> ` +
-    `<button id="bld-layout" title="Cycle layout (single → L-wing → courtyard → eco-complex, shortcut: C)">${layoutBadge}</button> ` +
-    `<button id="bld-roof" title="Cycle roof type (standard → green → solar, shortcut: G)">${roofBadge} (G)</button> ` +
-    `<button id="bld-rot" title="Rotate 15° (shortcut: R or [ / ])">↻ Rotate (R)</button> ` +
-    `<span style="margin-left:3px;font-size:11px;color:#64748b">W</span><button id="bld-w-dec" title="Narrower">−</button><button id="bld-w-inc" title="Wider">+</button> ` +
-    `<span style="margin-left:3px;font-size:11px;color:#64748b">D</span><button id="bld-d-dec" title="Shorter">−</button><button id="bld-d-inc" title="Deeper">+</button> ` +
-    `<span style="margin-left:3px;font-size:11px;color:#64748b">Floors</span><button id="bld-fl-dec" title="Fewer floors (−)">−</button><button id="bld-fl-inc" title="More floors (+)">+</button>`;
+  const html = `<span class="pl-grp">🏢 <b><span class="pl-num pl-num-dim">${spec.w}</span>×<span class="pl-num pl-num-dim">${spec.d}</span> m · <span class="pl-num pl-num-fl">${spec.floors}</span> fl · <span class="pl-num pl-num-rot">${spec.rot}°</span></b></span>` +
+    `<button id="bld-layout" title="Cycle layout (single → L-wing → courtyard → eco-complex, shortcut: C)">${layoutBadge}</button>` +
+    `<button id="bld-roof" title="Cycle roof type (standard → green → solar, shortcut: G)">${roofBadge} (G)</button>` +
+    `<button id="bld-rot" title="Rotate 15° (shortcut: R or [ / ])">↻ Rotate (R)</button>` +
+    `<span class="pl-grp"><span class="pl-lbl">W</span><button id="bld-w-dec" title="Narrower">−</button><button id="bld-w-inc" title="Wider">+</button></span>` +
+    `<span class="pl-grp"><span class="pl-lbl">D</span><button id="bld-d-dec" title="Shorter">−</button><button id="bld-d-inc" title="Deeper">+</button></span>` +
+    `<span class="pl-grp"><span class="pl-lbl">Floors</span><button id="bld-fl-dec" title="Fewer floors (−)">−</button><button id="bld-fl-inc" title="More floors (+)">+</button></span>`;
   say(html);
 
   document.getElementById('bld-layout')?.addEventListener('click', cycleBuildingLayout);
@@ -1260,11 +1277,22 @@ const CSS = `
 #pl-tip{position:fixed;z-index:5;pointer-events:none;display:none;padding:4px 8px;border-radius:6px;
  font:12px/1.3 system-ui,-apple-system,sans-serif;color:#fff;box-shadow:0 1px 4px rgba(0,0,0,.25);white-space:nowrap}
 #pl-tip.ok{background:rgba(46,125,50,.92)} #pl-tip.no{background:rgba(183,28,28,.92)}
-#pl-info{position:absolute;left:50%;top:56px;transform:translateX(-50%);z-index:3;display:none;max-width:min(680px,calc(100vw - 40px));
- padding:5px 10px;border-radius:999px;background:rgba(255,255,255,.92);backdrop-filter:blur(10px);-webkit-backdrop-filter:blur(10px);
+#pl-info{position:absolute;left:50%;top:56px;transform:translateX(-50%);z-index:3;display:none;
+ flex-wrap:wrap;align-items:center;justify-content:center;gap:3px 3px;
+ width:max-content;max-width:calc(100vw - 32px);box-sizing:border-box;text-align:center;
+ padding:4px 8px;border-radius:18px;background:rgba(255,255,255,.92);backdrop-filter:blur(10px);-webkit-backdrop-filter:blur(10px);
  border:1px solid rgba(15,23,42,.1);box-shadow:0 4px 16px rgba(15,23,42,.14);
- font:500 12px/1.4 system-ui,-apple-system,sans-serif;color:#1f2933;white-space:nowrap}
-#pl-info button{margin:0 0 0 5px;font:500 11.5px system-ui,sans-serif;border:1px solid rgba(15,23,42,.16);background:#fff;border-radius:999px;padding:2px 8px;cursor:pointer}
+ font:500 11.5px/1.35 system-ui,-apple-system,sans-serif;color:#1f2933;font-variant-numeric:tabular-nums}
+#pl-info .pl-grp{display:inline-flex;align-items:center;gap:2px;white-space:nowrap}
+#pl-info .pl-lbl{margin-left:1px;font-size:10.5px;color:#64748b}
+#pl-info .pl-num{display:inline-block;text-align:right;font-variant-numeric:tabular-nums}
+#pl-info .pl-num-dim{min-width:2ch}
+#pl-info .pl-num-fl{min-width:2ch}
+#pl-info .pl-num-rot{min-width:4ch}
+#pl-info button{margin:0;font:500 11px/1.2 system-ui,sans-serif;border:1px solid rgba(15,23,42,.16);background:#fff;border-radius:999px;padding:2px 6px;cursor:pointer;white-space:nowrap}
+#pl-info .pl-grp button{padding:1px 5px}
+#pl-info #bld-layout{min-width:115px;text-align:center}
+#pl-info #bld-roof{min-width:114px;text-align:center}
 #pl-info button:hover{background:rgba(15,23,42,.06)}
 #pl-info #pl-ok{background:#2e7d32;border-color:#2e7d32;color:#fff}
 .pl-float{position:fixed;z-index:6;pointer-events:none;transform:translate(-50%,-50%);padding:6px 12px;border-radius:14px;
@@ -1324,7 +1352,12 @@ function init() {
   });
   window.addEventListener('selection-changed', (e) => updateSelectionPill(e.detail));
   const ui = document.getElementById('ui');
-  if (ui) new ResizeObserver(() => { info.style.top = `${ui.offsetTop + ui.offsetHeight + 8}px`; }).observe(ui);
+  if (ui) {
+    const ro = new ResizeObserver(syncLayout);
+    ro.observe(ui);
+    ro.observe(info);
+    window.addEventListener('resize', syncLayout);
+  }
 
   map.addSource('green-areas', { type: 'geojson', data: EMPTY });
   const colour = ['match', ['get', 'state'], 'bad', '#c62828', 'pending', '#f9a825', '#2e7d32'];
