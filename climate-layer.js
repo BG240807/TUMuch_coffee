@@ -5,7 +5,6 @@ const N = 120;                 // grid cells per side
 const HALF = 1600;             // metres from grid centre to edge (3.2 km × 3.2 km coverage)
 const CELL = (2 * HALF) / N;   // ~26.7 m cells
 const MLAT = 111320;           // metres per degree latitude
-const AUTO_T = 4;              // °C: in Auto mode, rain/snow starts by itself at or below this
 const SNOW_T = 1.5;            // °C: at or below this it falls as snow
 const CO2_REF_KG = 7500;       // rough yearly CO₂ per person (kg): CO₂ avoided is also shown as a % of this
 const clamp = (v, a, b) => Math.min(b, Math.max(a, v));
@@ -415,12 +414,11 @@ function computeRanges() {
 
 /* ---------------- precipitation: rain / snow rules + accumulated levels ---------------- */
 // Water-equivalent precipitation rate (mm/h) for a cell.
-//  auto : real rain (live / month data) at any temperature, plus it starts by itself at <= AUTO_T
+//  auto : only real precipitation (live / month data); snow or rain depends on the temperature
 //  rain / snow : forced by the buttons;  off : nothing
 function precipRate(T, p0) {
   if (wxMode === 'off') return 0;
   if (wxMode === 'rain' || wxMode === 'snow') return Math.max(p0, 3);
-  if (T <= AUTO_T) return clamp(Math.max(p0, 1 + (AUTO_T - T) * 0.3), 0, 8);
   return p0;
 }
 // 0 = dry, 1 = rain, 2 = snow
@@ -457,7 +455,7 @@ function computeWeather() {
     } else {
       // rain runs off sealed ground and pools in low spots (valley bottoms, next to water)
       const low = clamp((S.elevB[k] - S.elev[k]) / 4 + 0.3 * S.waterB[k], 0, 1);
-      const d = Math.min(40, rate * stormH * F.scn.Runoff[k] * (0.03 + 0.3 * low));
+      const d = Math.min(40, rate * stormH * F.scn.Runoff[k] * (0.03 + 0.3 * low) / 10);   // mm of rain -> cm of water
       Water[k] = d;
       if (d > 0.3) { sumW += d; nW++; if (d > maxW) maxW = d; }
     }
@@ -615,7 +613,7 @@ function updateAccText() {
   } else if (wxMode === 'off') {
     el.innerHTML = '<div style="color:#94a3b8">Rain / snow is switched off.</div>';
   } else {
-    el.innerHTML = `<div style="color:#94a3b8">Dry. In Auto, rain / snow appears when it really rains or at ≤ ${AUTO_T} °C.</div>`;
+    el.innerHTML = `<div style="color:#94a3b8">Dry. In Auto, rain / snow appears only when the weather data has some.</div>`;
   }
 }
 
@@ -946,12 +944,12 @@ function buildUI() {
       <label class="cl-chk"><input type="checkbox" id="cl-delta"> Show only the change from my edits</label>
       <div class="cl-row" style="margin:8px 0 4px">Rain / snow</div>
       <div class="cl-wx">
-        <button data-w="auto" class="on" title="Follows real rain and the temperature (≤ ${AUTO_T} °C)">Auto</button>
+        <button data-w="auto" class="on" title="Follows the real rain data; snow when it is cold">Auto</button>
         <button data-w="rain" title="Show rain everywhere">🌧</button>
         <button data-w="snow" title="Show snow everywhere">❄</button>
         <button data-w="off" title="Hide rain and snow">Off</button>
       </div>
-      <label class="cl-row">Storm duration: <b id="cl-hv">${stormH} h</b>
+      <label class="cl-row">Hours of rain / snow: <b id="cl-hv">${stormH} h</b>
         <input type="range" id="cl-hours" min="1" max="24" value="${stormH}">
       </label>
       <div id="cl-bar"></div>
