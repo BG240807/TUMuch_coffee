@@ -286,14 +286,6 @@ function makeBuilding(lng, lat, opts = {}) {
     mE.position.set(W / 2 - T / 2, h / 2, 0);
     group.add(mE);
 
-    if (layout === 'eco-complex') {
-      const tree1 = makeTree(lng, lat, 0.75, 1);
-      tree1.position.set(-Math.round((W - 2 * T) * 0.25), 0, 0);
-      const tree2 = makeTree(lng, lat, 0.75, 2);
-      tree2.position.set(Math.round((W - 2 * T) * 0.25), 0, 0);
-      group.add(tree1, tree2);
-    }
-
     group.rotation.y = (rot * Math.PI) / 180;
     const p = toScene(lng, lat, groundAt(lng, lat));
     group.position.set(p.x, p.y, p.z);
@@ -841,9 +833,11 @@ function retrofitSelected(type) {
       const prevRoof = rec.obj.userData?.roofType || 'standard';
       rec.obj.userData.roofType = type;
       const roofColor = type === 'green' ? 0x2e7d32 : type === 'solar' ? 0x1565c0 : 0xefece6;
-      if (Array.isArray(rec.obj.material) && rec.obj.material[2]) {
-        rec.obj.material[2] = new THREE.MeshLambertMaterial({ color: roofColor });
-      }
+      rec.obj.traverse(ch => {
+        if (ch.isMesh && Array.isArray(ch.material) && ch.material[2]) {
+          ch.material[2] = new THREE.MeshLambertMaterial({ color: roofColor });
+        }
+      });
       changed.push({ kind: 'placed', placedRec: rec, prevRoof, nextRoof: type });
     }
   }
@@ -873,9 +867,11 @@ function restoreEntry(h) {
         const roofType = item.prevRoof || 'standard';
         item.placedRec.obj.userData.roofType = roofType;
         const roofColor = roofType === 'green' ? 0x2e7d32 : roofType === 'solar' ? 0x1565c0 : 0xefece6;
-        if (Array.isArray(item.placedRec.obj.material) && item.placedRec.obj.material[2]) {
-          item.placedRec.obj.material[2] = new THREE.MeshLambertMaterial({ color: roofColor });
-        }
+        item.placedRec.obj.traverse(ch => {
+          if (ch.isMesh && Array.isArray(ch.material) && ch.material[2]) {
+            ch.material[2] = new THREE.MeshLambertMaterial({ color: roofColor });
+          }
+        });
       } else {
         if (item.prev) {
           retrofitted[item.key] = item.prev;
@@ -943,7 +939,7 @@ function saveSession() {
         layout: p.obj.userData?.layout || 'single',
         skipCourtyardTrees: true
       })),
-      history,
+      history: history.filter(h => h.kind === 'building' || h.kind === 'tree' || h.kind === 'placed'),
       retrofitted,
       carFreeLines: window.__app.carFreeLines || []
     }));
@@ -1085,7 +1081,8 @@ function updateCount() {
   const b = placed.filter(p => p.type === 'building').length;
   let text = `Trees: ${t} | Buildings: ${b}`;
   if (cadastre) text += ` | Cadastre: ${cadastre.visibleCount.toLocaleString()} / ${cadastre.count.toLocaleString()} loaded`;
-  if (history.length) text += ` | Deleted: ${new Set(history.map((h, i) => h.batch ? 'b' + h.batch : 'i' + i)).size}`;
+  const delHist = history.filter(h => h.kind === 'building' || h.kind === 'tree' || h.kind === 'placed');
+  if (delHist.length) text += ` | Deleted: ${new Set(delHist.map((h, i) => h.batch ? 'b' + h.batch : 'i' + i)).size}`;
   if (selected) {
     const nb = selected.buildings.length;
     const nt = selected.trees.length;
