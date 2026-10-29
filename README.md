@@ -73,6 +73,7 @@ python3 scripts/fetch_climate.py
 
 Built by **Team TUMuch Coffee** for the **Green City Hackathon Heilbronn 2026**:
 
-- **Taha Anjum (`Tahaa00`)** — Live & monthly metrics card, 2020–2050 time slider & CMIP6 climate projection pipeline (`scripts/fetch_climate.py`), terrain height alignment, base map styling, legend, about card, and welcome screen.
-- **Bodhideepto Gupta (`BodhideeptoGupta` / `BG240807`)** — Baumkataster shapefile pipeline (`first_time_setup/trees.py`), instanced 3D tree cadastre rendering & frustum culling (`cadastre.js`), and 3D building selection, deletion & restoration.
-- **Youssef Day (`youssef day`)** — 3D MapLibre + Three.js scene foundation and interactive local climate layers, weather scenarios, rain/snow particle system, and edit-delta simulation (`climate-layer.js`).
+- Muhammad Taha Anjum
+- Bodhideepto Gupta
+- Youssef Day
+- Jason Zhong
