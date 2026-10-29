@@ -287,6 +287,37 @@ test('scenario comparison in the real editor', { timeout: 480000 }, async (t) =>
     assert.equal(treesUndone, treesBefore, 'Undo should remove all planted street trees');
   });
 
+  await t.test('Phase 3: hotspots pill, tool shortcuts 1-8, and reset city', async () => {
+    // 1. Tool shortcuts 1-8
+    await page.keyboard.press('1');
+    assert.equal(await page.locator('#btnNav').evaluate(el => el.classList.contains('active')), true);
+    await page.keyboard.press('4');
+    assert.equal(await page.locator('#btnTree').evaluate(el => el.classList.contains('active')), true);
+    await page.keyboard.press('8');
+    assert.equal(await page.locator('#btnCarFree').evaluate(el => el.classList.contains('active')), true);
+
+    // 2. Hotspots pill
+    const hotspotPill = page.locator('#hotspot-pill');
+    assert.equal(await hotspotPill.isVisible(), true);
+    await page.locator('#btnHotspot-neckarbogen').click();
+    assert.equal(await page.locator('#btnHotspot-neckarbogen').getAttribute('aria-pressed'), 'true');
+
+    // 3. Reset city back to baseline
+    await page.evaluate(() => window.__app.addObject('tree', 9.215, 49.143));
+    await page.waitForFunction(() => {
+      const s = [...document.querySelectorAll('#comparison-card tbody tr td:last-child')].map(e => e.textContent);
+      return s[0] !== '0';
+    });
+    page.once('dialog', dialog => dialog.accept());
+    await page.locator('#btnResetCity').click();
+    await page.waitForFunction(() => {
+      const s = [...document.querySelectorAll('#comparison-card tbody tr td:last-child')].map(e => e.textContent);
+      return s[0] === '0' && s[1] === '0' && s[2] === '0' && s[3] === '0.0 m²' && s[8] === '0 m';
+    }, { timeout: 15000 });
+    const placedAfterReset = await page.evaluate(() => window.editor.placed.length);
+    assert.equal(placedAfterReset, 0, 'Reset city should clear all placed objects');
+  });
+
   await t.test('comparison buttons work by keyboard and repeated switching never saves', async () => {
     const saved = await stored();
     await original.focus();

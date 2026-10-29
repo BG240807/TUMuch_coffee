@@ -857,6 +857,13 @@ function saveAreas() { try { sessionStorage.setItem(STORE_KEY, JSON.stringify(ar
 function loadAreas() {
   try { areas = (JSON.parse(sessionStorage.getItem(STORE_KEY)) || []).filter((a) => a.trees); } catch { areas = []; }
 }
+function resetAreas() {
+  areas = [];
+  try { sessionStorage.removeItem(STORE_KEY); } catch { /* ignore */ }
+  if (map?.getSource('green-areas')) map.getSource('green-areas').setData(EMPTY);
+  if (tool) { stopTool(); say(''); }
+  if (brush) stopBrush();
+}
 
 // ---------- car-free street tool ----------
 let btnCarFree;
@@ -1186,18 +1193,18 @@ function init() {
   document.body.append(tip, info);
 
   brushBtn = Object.assign(document.createElement('button'), { id: 'btnTreeBrush', textContent: '🖌️ Tree brush',
-    title: 'Hold the mouse down and paint trees' });
+    title: 'Tree brush (5) — Hold the mouse down and paint trees' });
   document.getElementById('btnTree').after(brushBtn);
   brushBtn.addEventListener('click', () => (brush ? stopBrush() : startBrush()));
   btn = Object.assign(document.createElement('button'), { id: 'btnGreenArea', textContent: '🌳 Green area',
-    title: 'Turn a square, lawn or block green: buildings inside are demolished and trees planted' });
+    title: 'Green area (6) — Turn a square, lawn or block green: buildings inside are demolished and trees planted' });
   brushBtn.after(btn);
   btn.addEventListener('click', () => (tool ? (stopTool(), say('')) : startTool()));
 
   btnCarFree = Object.assign(document.createElement('button'), {
     id: 'btnCarFree',
     textContent: '🚲 Car-free street',
-    title: 'Convert a car road into a green pedestrian and bike street with street trees along both edges'
+    title: 'Car-free street (8) — Convert a car road into a green pedestrian and bike street with street trees along both edges'
   });
   const btnBld = document.getElementById('btnBuilding');
   if (btnBld) btnBld.after(btnCarFree);
@@ -1436,6 +1443,7 @@ window.placement = {
     return rd;
   },
   undoCarFree,
+  resetAreas,
   allow(type, e) {
     if (!map) return true;
     const pt = [e.lngLat.lng, e.lngLat.lat];

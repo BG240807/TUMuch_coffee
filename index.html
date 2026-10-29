@@ -55,29 +55,57 @@
       color: #475569; font-variant-numeric: tabular-nums;
       pointer-events: none;
     }
+    #hotspot-pill {
+      position: absolute; left: 50%; bottom: 84px; transform: translateX(-50%); z-index: 2;
+      display: flex; align-items: center; gap: 4px; padding: 4px 8px;
+      background: rgba(255, 255, 255, 0.88); backdrop-filter: blur(12px); -webkit-backdrop-filter: blur(12px);
+      border: 1px solid rgba(15, 23, 42, 0.08); border-radius: 999px;
+      box-shadow: 0 4px 16px rgba(15, 23, 42, 0.12);
+      font: 500 12px/1 system-ui, -apple-system, sans-serif; color: #1f2a30;
+      white-space: nowrap;
+    }
+    #hotspot-pill .hp-title {
+      font-size: 13px; margin: 0 2px;
+    }
+    #hotspot-pill button {
+      padding: 4px 9px; border: 0; border-radius: 999px;
+      background: transparent; color: #334155; font: 500 11.5px/1.2 system-ui, -apple-system, sans-serif;
+      cursor: pointer; transition: background 0.15s, color 0.15s, box-shadow 0.15s;
+    }
+    #hotspot-pill button:hover:not(.active) {
+      background: rgba(15, 23, 42, 0.06);
+    }
+    #hotspot-pill button.active {
+      background: #1f6f43; color: #fff; box-shadow: 0 1px 3px rgba(15, 23, 42, 0.2);
+    }
     @media (max-width: 1150px), (max-height: 760px) {
       #ui { max-width: calc(100vw - 265px); padding: 3px; gap: 2px; }
       #ui button { padding: 4px 6.5px; font-size: 11px; }
       #count { font-size: 10.5px; padding: 4px 9px; }
+      #hotspot-pill { bottom: 76px; padding: 3px 6px; }
+      #hotspot-pill button { padding: 3px 7px; font-size: 11px; }
     }
     @media (max-width: 760px) {
       #ui { max-width: calc(100vw - 64px); }
+      #hotspot-pill { bottom: 68px; }
     }
   </style>
 </head>
 <body>
 <div id="map"></div>
 <div id="ui">
-  <button id="btnNav">✋ Navigate</button>
-  <button id="btnSelect">👆 Select</button>
-  <button id="btnInspect">ℹ Inspect tree</button>
+  <button id="btnNav" title="Navigate (1)">✋ Navigate</button>
+  <button id="btnSelect" title="Select (2)">👆 Select</button>
+  <button id="btnInspect" title="Inspect tree (3)">ℹ Inspect tree</button>
   <span class="ui-sep" aria-hidden="true"></span>
-  <button id="btnTree" class="active">🌳 Place tree</button>
-  <button id="btnBuilding">🏢 Place building</button>
+  <button id="btnTree" class="active" title="Place tree (4)">🌳 Place tree</button>
+  <button id="btnBuilding" title="Place building (7)">🏢 Place building</button>
   <span class="ui-sep" aria-hidden="true"></span>
   <button id="btnUndo" title="Undo last placed item">↩ Undo</button>
   <button id="btnDelete" title="Delete selected (Del)">🗑 Delete</button>
   <button id="btnRestore" title="Restore last deleted">♻ Restore</button>
+  <span class="ui-sep" aria-hidden="true"></span>
+  <button id="btnResetCity" title="Reset all changes back to baseline">↺ Reset city</button>
 </div>
 <div id="count"></div>
 <script type="module" src="metrics-card.js"></script>
@@ -1064,7 +1092,89 @@ btnInspect.onclick = () => setMode('inspect', 'btnInspect');
 btnSelect.onclick = () => setMode('select', 'btnSelect');
 btnDelete.onclick = deleteSelected;
 btnRestore.onclick = restoreLastDeleted;
+function resetCity(skipConfirm = false) {
+  if (!skipConfirm && !confirm('Reset all city changes back to baseline?')) return false;
+
+  const propBtn = [...document.querySelectorAll('#comparison-card .cc-toggle button')].find(b => b.textContent.includes('Proposal'));
+  if (propBtn && propBtn.getAttribute('aria-pressed') !== 'true') {
+    propBtn.click();
+  }
+
+  for (const p of placed) {
+    if (p.obj) scene.remove(p.obj);
+  }
+  placed.length = 0;
+
+  deleted.length = 0;
+
+  for (const k of Object.keys(retrofitted)) {
+    delete retrofitted[k];
+  }
+  if (window.__app?.retrofitted) {
+    for (const k of Object.keys(window.__app.retrofitted)) {
+      delete window.__app.retrofitted[k];
+    }
+  }
+
+  if (window.__app?.carFreeLines) {
+    window.__app.carFreeLines.length = 0;
+  }
+  map.getSource('carfree-lines')?.setData({ type: 'FeatureCollection', features: [] });
+  map.getSource('carfree-hover')?.setData({ type: 'FeatureCollection', features: [] });
+
+  if (window.placement?.resetAreas) {
+    window.placement.resetAreas();
+  }
+
+  if (window.__app?.history) window.__app.history.length = 0;
+  selected = null;
+  refreshSelection();
+
+  try {
+    sessionStorage.removeItem('tumuch-editor-session');
+    sessionStorage.removeItem('heilbronn3d-session');
+    sessionStorage.removeItem('heilbronn3d-green-areas');
+  } catch {}
+
+  refreshBuildings();
+  updateCount();
+
+  window.dispatchEvent(new CustomEvent('scene-changed'));
+  window.dispatchEvent(new CustomEvent('cadastre-changed'));
+  window.dispatchEvent(new CustomEvent('selection-changed', { detail: null }));
+
+  return true;
+}
+
+const btnResetCity = document.getElementById('btnResetCity');
+if (btnResetCity) btnResetCity.onclick = () => resetCity();
+
 document.addEventListener('keydown', (e) => {
+  const tag = e.target?.tagName;
+  if (tag === 'INPUT' || tag === 'TEXTAREA' || e.target?.isContentEditable) return;
+  if (e.metaKey || e.ctrlKey || e.altKey) return;
+
+  const toolKeys = {
+    '1': 'btnNav',
+    '2': 'btnSelect',
+    '3': 'btnInspect',
+    '4': 'btnTree',
+    '5': 'btnTreeBrush',
+    '6': 'btnGreenArea',
+    '7': 'btnBuilding',
+    '8': 'btnCarFree'
+  };
+
+  const btnId = toolKeys[e.key];
+  if (btnId) {
+    const btn = document.getElementById(btnId);
+    if (btn && !btn.disabled) {
+      e.preventDefault();
+      btn.click();
+    }
+    return;
+  }
+
   if (mode === 'select' && (e.key === 'Delete' || e.key === 'Backspace')) {
     e.preventDefault();
     deleteSelected();
@@ -1083,6 +1193,7 @@ window.__app = {
   set selected(v) { selected = v; refreshSelection(); },
   retrofitted,
   retrofitSelected,
+  resetCity,
   buildings,
   isDeleted,
   refreshBuildings,
@@ -1097,6 +1208,7 @@ window.__app = {
 };
 updateCount();
 import { addComparisonCard } from './comparison-card.js'; addComparisonCard({ map, scene, placed, deleted });
+import { addHotspots } from './hotspots.js'; addHotspots({ map });
 </script>
 </body>
 </html>
