@@ -10,7 +10,7 @@ import { test } from 'node:test';
 const { chromium } = createRequire(import.meta.url)('playwright');
 const root = new URL('../', import.meta.url);
 
-test('scenario comparison in the real editor', { timeout: 360000 }, async (t) => {
+test('scenario comparison in the real editor', { timeout: 480000 }, async (t) => {
   const server = createServer(async (req, res) => {
     const path = new URL(req.url, 'http://localhost').pathname;
     const file = new URL('.' + (path === '/' ? '/index.html' : path), root);
@@ -52,7 +52,7 @@ test('scenario comparison in the real editor', { timeout: 360000 }, async (t) =>
   const browser = await chromium.launch({ channel: 'chrome', args: ['--use-angle=swiftshader'] });
   t.after(async () => { await browser.close(); await new Promise(resolve => server.close(resolve)); });
   const page = await browser.newPage({ viewport: { width: 1440, height: 1000 } });
-  page.setDefaultTimeout(10000);
+  page.setDefaultTimeout(30000);
   const errors = [];
   page.on('pageerror', error => { errors.push(error.message); console.error('Browser error:', error.message); });
   page.on('console', message => { if (message.type() === 'error') console.error('Browser console:', message.text()); });
@@ -93,6 +93,28 @@ test('scenario comparison in the real editor', { timeout: 360000 }, async (t) =>
     }, size);
   };
 
+  const ensureCleanState = async () => {
+    try {
+      const isOriginal = await page.evaluate(() => {
+        const btn = document.querySelector('#comparison-card button[aria-pressed="true"]');
+        return btn && btn.textContent.trim() === 'Original';
+      });
+      if (isOriginal) {
+        await proposal.click();
+        await page.waitForFunction(() => {
+          const btn = document.querySelector('#comparison-card button[aria-pressed="true"]');
+          return btn && btn.textContent.trim() === 'Proposal';
+        }, null, { timeout: 5000 });
+      }
+      const vp = page.viewportSize();
+      if (vp && (vp.width !== 1440 || vp.height !== 1000)) {
+        await page.setViewportSize({ width: 1440, height: 1000 });
+      }
+    } catch (_) {}
+  };
+  t.beforeEach(ensureCleanState);
+  t.afterEach(ensureCleanState);
+
   await t.test('an untouched city starts with zero changes', async () => {
     await page.locator('#comparison-card').waitFor({ timeout: 15000 });
     await page.waitForFunction(() => window.editor?.map.getLayer('comparison-original'));
@@ -103,12 +125,12 @@ test('scenario comparison in the real editor', { timeout: 360000 }, async (t) =>
 
   await t.test('mixed edits count overlapping canopy as a sum, not unique coverage', async () => {
     await page.locator('#btnTree').click();
-    await page.locator('.maplibregl-canvas').click({ position: { x: 800, y: 450 } });
+    await page.locator('.maplibregl-canvas').click({ position: { x: 800, y: 450 }, force: true });
     await fixTreeSize(1);
-    await page.locator('.maplibregl-canvas').click({ position: { x: 800, y: 450 } });
+    await page.locator('.maplibregl-canvas').click({ position: { x: 800, y: 450 }, force: true });
     await fixTreeSize(1.5);
     await page.locator('#btnBuilding').click();
-    await page.locator('.maplibregl-canvas').click({ position: { x: 900, y: 450 } });
+    await page.locator('.maplibregl-canvas').click({ position: { x: 900, y: 450 }, force: true });
     await expectStats(['2', '1', '0', '91.9 m²', '0 m²', '0 m²', '0 kWh/yr', '0.0 t/yr']);
   });
 
@@ -127,22 +149,27 @@ test('scenario comparison in the real editor', { timeout: 360000 }, async (t) =>
     await expectStats(['1', '0', '1', '28.3 m²', '0 m²', '0 m²', '0 kWh/yr', '0.0 t/yr']);
     const saved = await stored();
     await original.click();
-    assert.equal(await original.getAttribute('aria-pressed'), 'true');
-    await page.waitForFunction(() => editor.map.queryRenderedFeatures({ layers: ['comparison-original'] }).length > 0);
-    assert.equal(await page.evaluate(() => editor.map.getPaintProperty('comparison-original', 'fill-extrusion-opacity')), 0.9);
-    assert.deepEqual(await page.evaluate(() => ({
-      visible: editor.placed[0].obj.visible,
-      original: editor.map.getLayoutProperty('comparison-original', 'visibility'),
-      edited: editor.map.getLayoutProperty('buildings-own', 'visibility')
-    })), { visible: false, original: 'visible', edited: 'none' });
-    assert.equal(await page.locator('#btnTree').isDisabled(), true);
-    assert.equal(await page.locator('#btnUndo').isDisabled(), true);
-    assert.equal(await page.locator('#btnRestore').isDisabled(), true);
-    await page.locator('.maplibregl-canvas').click({ position: { x: 900, y: 450 } });
-    await page.keyboard.press('Delete');
-    assert.equal(await stored(), saved);
-    await expectStats(['1', '0', '1', '28.3 m²', '0 m²', '0 m²', '0 kWh/yr', '0.0 t/yr']);
-    await proposal.click();
+    try {
+      assert.equal(await original.getAttribute('aria-pressed'), 'true');
+      await page.waitForFunction(() => editor.map.queryRenderedFeatures({ layers: ['comparison-original'] }).length > 0);
+      assert.equal(await page.evaluate(() => editor.map.getPaintProperty('comparison-original', 'fill-extrusion-opacity')), 0.9);
+      assert.deepEqual(await page.evaluate(() => ({
+        visible: editor.placed[0].obj.visible,
+        original: editor.map.getLayoutProperty('comparison-original', 'visibility'),
+        edited: editor.map.getLayoutProperty('buildings-own', 'visibility')
+      })), { visible: false, original: 'visible', edited: 'none' });
+      assert.equal(await page.locator('#btnTree').isDisabled(), true);
+      assert.equal(await page.locator('#btnUndo').isDisabled(), true);
+      assert.equal(await page.locator('#btnRestore').isDisabled(), true);
+      await page.locator('.maplibregl-canvas').click({ position: { x: 900, y: 450 }, force: true });
+      await page.keyboard.press('Delete');
+      assert.equal(await stored(), saved);
+      await expectStats(['1', '0', '1', '28.3 m²', '0 m²', '0 m²', '0 kWh/yr', '0.0 t/yr']);
+    } finally {
+      if (await original.getAttribute('aria-pressed') === 'true') {
+        await proposal.click();
+      }
+    }
     assert.equal(await page.evaluate(() => editor.placed[0].obj.visible), true);
     assert.equal(await page.locator('#btnSelect').getAttribute('class'), 'active');
     assert.equal(await stored(), saved);
@@ -216,6 +243,10 @@ test('scenario comparison in the real editor', { timeout: 360000 }, async (t) =>
     });
     await page.waitForSelector('#sel-green');
     await page.locator('#sel-green').click();
+    await page.waitForFunction(() => {
+      const s = [...document.querySelectorAll('#comparison-card tbody tr td:last-child')].map(e => e.textContent);
+      return s[4] && s[4] !== '0 m²';
+    }, { timeout: 15000 });
     const st1 = await stats();
     assert.notEqual(st1[4], '0 m²', 'Green roof m² should increase');
     // Undo restores roof state

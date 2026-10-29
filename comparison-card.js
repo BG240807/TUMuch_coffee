@@ -84,17 +84,25 @@ export function addComparisonCard({ map, scene, placed, deleted }) {
     }
 
     if (window.__app?.retrofitted && window.__app?.buildings) {
-      const retroMap = window.__app.retrofitted instanceof Map
-        ? window.__app.retrofitted
-        : new Map(Object.entries(window.__app.retrofitted));
-      for (const b of window.__app.buildings.values()) {
-        if (window.__app.isDeleted && window.__app.isDeleted(b)) continue;
-        const type = retroMap.get(b.key) || retroMap.get(String(b.props?.bid)) || b.props?.retrofit;
-        if (type) {
-          const area = ringArea(b.poly?.[0]);
-          if (type === 'green') greenM2 += area;
-          else if (type === 'solar') solarM2 += area;
+      const retroEntries = window.__app.retrofitted instanceof Map
+        ? window.__app.retrofitted.entries()
+        : Object.entries(window.__app.retrofitted);
+      for (const [key, type] of retroEntries) {
+        if (!type) continue;
+        let b = window.__app.buildings.get(key);
+        if (!b) {
+          for (const cand of window.__app.buildings.values()) {
+            if (cand.key === key || String(cand.props?.bid) === key) {
+              b = cand;
+              break;
+            }
+          }
         }
+        if (!b) continue;
+        if (window.__app.isDeleted && window.__app.isDeleted(b)) continue;
+        const area = ringArea(b.poly?.[0]);
+        if (type === 'green') greenM2 += area;
+        else if (type === 'solar') solarM2 += area;
       }
     }
 
@@ -145,6 +153,7 @@ export function addComparisonCard({ map, scene, placed, deleted }) {
   }
   original.addEventListener('click', () => setOriginal(true));
   proposal.addEventListener('click', () => setOriginal(false));
+  window.addEventListener('scene-changed', update);
   if (map.getLayer('buildings-3d')) setup();
   else map.once('load', setup);
   update();
