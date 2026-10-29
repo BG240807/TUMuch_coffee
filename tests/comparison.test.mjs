@@ -119,7 +119,7 @@ test('scenario comparison in the real editor', { timeout: 480000 }, async (t) =>
     await page.locator('#comparison-card').waitFor({ timeout: 15000 });
     await page.waitForFunction(() => window.editor?.map.getLayer('comparison-original'));
     await expectStats(['0', '0', '0', '0.0 m²', '0 m²', '0 m²', '0 kWh/yr', '0.0 t/yr', '0 m']);
-    assert.equal(await proposal.getAttribute('aria-pressed'), 'true');
+    assert.equal(await original.getAttribute('aria-pressed'), 'true');
   });
   assert.equal(await original.isEnabled(), true, 'Map setup must finish before the remaining workflow');
 
@@ -226,7 +226,8 @@ test('scenario comparison in the real editor', { timeout: 480000 }, async (t) =>
     assert.equal(await stored(), saved);
     await page.reload();
     await expectStats(['2', '0', '1', '46.4 m²', '0 m²', '0 m²', '0 kWh/yr', '0.0 t/yr', '0 m']);
-    assert.equal(await proposal.getAttribute('aria-pressed'), 'true');
+    assert.equal(await original.getAttribute('aria-pressed'), 'true');
+    await proposal.click();
     assert.equal(await page.evaluate(() => editor.placed.every(p => p.obj.visible)), true);
   });
 

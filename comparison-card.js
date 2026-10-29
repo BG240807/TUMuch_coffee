@@ -159,6 +159,7 @@ export function addComparisonCard({ map, scene, placed, deleted }) {
     map.addLayer({ ...layer, id: 'comparison-original', layout: { visibility: 'none' },
       paint: { ...layer.paint, 'fill-extrusion-opacity': 0.9 } }, 'three-layer');
     original.disabled = proposal.disabled = false;
+    setOriginal(true);   // start on the unedited city
   }
   original.addEventListener('click', () => setOriginal(true));
   proposal.addEventListener('click', () => setOriginal(false));

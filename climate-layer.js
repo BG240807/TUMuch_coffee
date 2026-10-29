@@ -31,7 +31,7 @@ const MIN_DELTA = { T: 0.02, PET: 0.05, PM: 0.05, RH: 0.1 };
 const ROAD_W = { motorway: 1, trunk: 0.9, primary: 0.7, secondary: 0.5, tertiary: 0.35, minor: 0.12, service: 0.05 };
 
 let app, map, g, S, U, F, R, trees = [];
-let mode = 'temp', scen = 'live', deltaOnly = false;
+let mode = 'off', scen = 'live', deltaOnly = false;
 let wxMode = 'auto';           // rain / snow buttons: 'auto' | 'rain' | 'snow' | 'off'
 let stormH = 6;                // storm duration in hours (drives how much snow / water builds up)
 let W = { Snow: null, Water: null, maxS: 0, maxW: 0, avgS: 0, avgW: 0 };
@@ -482,7 +482,7 @@ function ensureLayer(url = TRANSPARENT) {
   map.addSource('climate-img', { type: 'image', url, coordinates: coords() });
   map.addLayer({
     id: 'climate-overlay', type: 'raster', source: 'climate-img',
-    paint: { 'raster-opacity': 0.62, 'raster-fade-duration': 0, 'raster-resampling': 'linear' }
+    paint: { 'raster-opacity': 0.45, 'raster-fade-duration': 0, 'raster-resampling': 'linear' }
   }, map.getLayer('buildings-own') ? 'buildings-own' : undefined);
   return false;
 }
@@ -931,7 +931,7 @@ function buildUI() {
     <div class="cl-head"><b>Climate layers</b><button id="cl-min" title="Collapse">–</button></div>
     <div id="cl-body">
       <div class="cl-modes">
-        <button data-m="off">Off</button><button data-m="temp" class="on">🌡 Air Temp</button>
+        <button data-m="off" class="on">Off</button><button data-m="temp">🌡 Air Temp</button>
         <button data-m="pet">☀️ Feel (PET)</button><button data-m="pm">🏭 Pollution</button>
         <button data-m="rh">💧 Humidity</button>
       </div>
