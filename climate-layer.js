@@ -5,7 +5,9 @@ const N = 120;                 // grid cells per side
 const HALF = 1600;             // metres from grid centre to edge (3.2 km × 3.2 km coverage)
 const CELL = (2 * HALF) / N;   // ~26.7 m cells
 const MLAT = 111320;           // metres per degree latitude
-const SNOW_T = 1.5;            // °C: at or below this it falls as snow
+const SNOW_T = 1.5;            // °C: at or below this it falls as snow (rain/snow 50 % point, Jennings et al. 2018)
+const DRAIN_MMH = 25;          // mm/h the sewers carry away; only rain above this pools (DWD heavy-rain warning > 25 mm/h, DWA-A 118 design rain)
+const CLOUDBURST_MMH = 40;     // 🌧 button: ~30-year storm for Heilbronn (DWD KOSTRA-2020, 60 min)
 const CO2_REF_KG = 7500;       // rough yearly CO₂ per person (kg): CO₂ avoided is also shown as a % of this
 const clamp = (v, a, b) => Math.min(b, Math.max(a, v));
 const fmt = (v, d = 1) => (v > 0 ? '+' : '') + v.toFixed(d);
@@ -15,7 +17,7 @@ const SCEN = {
   live: { T: 12, rh: 65, pm: 8, pm10: 15, no2: 25, precip: 0 },
   heat: { T: 34, rh: 35, pm: 14, pm10: 24, no2: 30, precip: 0 },
   snow: { T: -2, rh: 88, pm: 14, pm10: 22, no2: 35, precip: 2.5 },
-  rain: { T: 11, rh: 92, pm: 6.3, pm10: 4.5, no2: 18, precip: 8, rainWashout: true },
+  rain: { T: 11, rh: 92, pm: 6.3, pm10: 4.5, no2: 18, precip: 40, rainWashout: true },
   carfree: { T: 12, rh: 65, pm: 7.6, pm10: 14.3, no2: 12.5, precip: 0, carfree: true }
 };
 const KEY = { temp: 'T', pet: 'PET', pm: 'PM', rh: 'RH' };
@@ -392,10 +394,10 @@ function field(sc, withUser) {
     RH[k] = clamp(sc.rh - 2.0 * (T[k] - sc.T) + 6.0 * baseVeg + 5.0 * uVegB[k] + 8.0 * S.waterB[k] + 2.0 * cf, 15, 100);
 
     // --- 5. Stormwater Runoff Coefficient ---
-    const cBase = clamp(0.95 * sealedB[k] + 0.20 * baseVeg + 0.50 * (1 - sealedB[k] - baseVeg), 0.15, 0.95);
+    const cBase = clamp(0.90 * sealedB[k] + 0.10 * baseVeg + 0.50 * (1 - sealedB[k] - baseVeg), 0.05, 0.95);   // DWA-A 138: sealed 0.90, lawns/parks 0.10
     const dRunoffGreen = -0.30 * clamp(U.greenRoof[k] / area, 0, 1);
     const dRunoffCarFree = 0;   // a car-free street is still asphalt
-    Runoff[k] = withUser ? clamp(cBase - 0.42 * uVegB[k] + 0.48 * uBuiltB[k] + dRunoffGreen + dRunoffCarFree, 0.15, 0.95) : cBase;
+    Runoff[k] = withUser ? clamp(cBase - 0.42 * uVegB[k] + 0.48 * uBuiltB[k] + dRunoffGreen + dRunoffCarFree, 0.05, 0.95) : cBase;
   }
 
   return { T, PET, PM, RH, Runoff, Sealed: sealedB, Veg };
@@ -418,7 +420,8 @@ function computeRanges() {
 //  rain / snow : forced by the buttons;  off : nothing
 function precipRate(T, p0) {
   if (wxMode === 'off') return 0;
-  if (wxMode === 'rain' || wxMode === 'snow') return Math.max(p0, 3);
+  if (wxMode === 'rain') return Math.max(p0, CLOUDBURST_MMH);
+  if (wxMode === 'snow') return Math.max(p0, 3);
   return p0;
 }
 // 0 = dry, 1 = rain, 2 = snow
@@ -447,7 +450,8 @@ function computeWeather() {
     if (kind === 0) continue;
     if (kind === 2) {
       // colder = fluffier, deeper pile; trees and busy (warm, salted) roads keep less snow
-      const cold = 0.35 + 0.65 * clamp((SNOW_T - T) / 6, 0, 1);
+      // snow-to-water ratio: ~7:1 wet snow near +1 °C, 10:1 at -1 °C, ~20:1 dry snow at -11 °C (Roebber et al. 2003)
+      const cold = clamp(1 + (-1 - T) * 0.1, 0.7, 2);
       const shelter = clamp(1 - 0.25 * F.scn.Veg[k] - 0.35 * clamp(S.trafB[k] * (isCarFree ? 0.16 : 1), 0, 1), 0.4, 1);
       const d = Math.min(60, rate * stormH * cold * shelter);
       Snow[k] = d;
@@ -455,7 +459,10 @@ function computeWeather() {
     } else {
       // rain runs off sealed ground and pools in low spots (valley bottoms, next to water)
       const low = clamp((S.elevB[k] - S.elev[k]) / 4 + 0.3 * S.waterB[k], 0, 1);
-      const d = Math.min(40, rate * stormH * F.scn.Runoff[k] * (0.03 + 0.3 * low) / 10);   // mm of rain -> cm of water
+      // only rain the sewers can't take pools; hollows collect water from around them. Scaled so a 1 h
+      // cloudburst gives ~10-30 cm in hollows (LUBW heavy-rain hazard classes); flat streets stay dry
+      const excess = Math.max(0, rate - DRAIN_MMH);
+      const d = Math.min(100, excess * stormH * F.scn.Runoff[k] * (0.1 + 15 * low) / 10);   // mm -> cm
       Water[k] = d;
       if (d > 0.3) { sumW += d; nW++; if (d > maxW) maxW = d; }
     }
@@ -936,7 +943,7 @@ function buildUI() {
       <label class="cl-row">Scenario
         <select id="cl-scen">
           <option value="live">Live now</option><option value="heat">Heatwave 34 °C</option>
-          <option value="snow">Winter storm −2 °C</option><option value="rain">Heavy rain 11 °C</option>
+          <option value="snow">Winter storm −2 °C</option><option value="rain">Cloudburst 40 mm/h</option>
           <option value="carfree">Car-free day</option>
         </select>
       </label>
@@ -945,7 +952,7 @@ function buildUI() {
       <div class="cl-row" style="margin:8px 0 4px">Rain / snow</div>
       <div class="cl-wx">
         <button data-w="auto" class="on" title="Follows the real rain data; snow when it is cold">Auto</button>
-        <button data-w="rain" title="Show rain everywhere">🌧</button>
+        <button data-w="rain" title="Cloudburst: 40 mm/h, about a 30-year storm">🌧</button>
         <button data-w="snow" title="Show snow everywhere">❄</button>
         <button data-w="off" title="Hide rain and snow">Off</button>
       </div>
