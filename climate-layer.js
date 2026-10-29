@@ -203,11 +203,15 @@ function buildUser() {
     removed: new Float32Array(M),
     canopy: new Float32Array(M),
     park: new Float32Array(M),
+    greenRoof: new Float32Array(M),
+    solarRoof: new Float32Array(M),
     nTrees: 0,
     nBuild: 0,
     nRemoved: 0,
     nParks: 0,
-    totalBuildArea: 0
+    totalBuildArea: 0,
+    greenRoofArea: 0,
+    solarRoofArea: 0
   };
   for (const p of app.placed) {
     const k = idx(p.lng, p.lat);
@@ -217,11 +221,40 @@ function buildUser() {
     } else if (p.type === 'building') {
       U.nBuild++;
       const bArea = (p.obj && p.obj.userData && p.obj.userData.area) || 140;
+      const roofType = (p.obj && p.obj.userData && p.obj.userData.roofType) || 'standard';
       U.totalBuildArea += bArea;
-      if (k >= 0) U.built[k] += bArea;
+      if (roofType === 'green') {
+        U.greenRoofArea += bArea;
+        if (k >= 0) U.greenRoof[k] += bArea;
+      } else if (roofType === 'solar') {
+        U.solarRoofArea += bArea;
+        if (k >= 0) {
+          U.solarRoof[k] += bArea;
+          U.built[k] += bArea;
+        }
+      } else {
+        if (k >= 0) U.built[k] += bArea;
+      }
     } else if (p.type === 'park') {
       U.nParks++;
       if (k >= 0) U.park[k] += (p.obj?.userData?.area || 400);
+    }
+  }
+
+  // Retrofitted map buildings
+  if (app.retrofitted && S.bList) {
+    const retroEntries = app.retrofitted instanceof Map ? app.retrofitted.entries() : Object.entries(app.retrofitted);
+    const retroMap = new Map(retroEntries);
+    for (const e of S.bList) {
+      if (app.isDeleted(e.b)) continue;
+      const type = retroMap.get(e.b.key) || retroMap.get(String(e.b.props?.bid)) || e.b.props?.retrofit;
+      if (type === 'green') {
+        U.greenRoofArea += e.a;
+        if (e.k >= 0) U.greenRoof[e.k] += e.a;
+      } else if (type === 'solar') {
+        U.solarRoofArea += e.a;
+        if (e.k >= 0) U.solarRoof[e.k] += e.a;
+      }
     }
   }
 
@@ -254,9 +287,9 @@ function field(sc, withUser) {
   for (let k = 0; k < M; k++) {
     let b = S.built[k], c = S.canopy[k];
     if (withUser) {
-      b = Math.max(0, b + U.built[k] - U.removed[k] * 1.4);
+      b = Math.max(0, b + U.built[k] - U.removed[k] * 1.4 - U.greenRoof[k] * 0.7);
       c += U.canopy[k] * 1.8;
-      userVeg[k] = clamp((U.canopy[k] * 2.2 + U.removed[k] * 0.8 + (U.park[k] || 0) * area * 0.85) / area, 0, 1.2);
+      userVeg[k] = clamp((U.canopy[k] * 2.2 + U.removed[k] * 0.8 + (U.park[k] || 0) * area * 0.85 + U.greenRoof[k] * 0.7) / area, 0, 1.2);
       userBuilt[k] = clamp((U.built[k] * 1.6) / area, 0, 1.2);
     }
     sealed[k] = clamp((b / area) * 1.8, 0, 1);
@@ -316,7 +349,8 @@ function field(sc, withUser) {
 
     // --- 5. Stormwater Runoff Coefficient ---
     const cBase = clamp(0.95 * sealedB[k] + 0.20 * baseVeg + 0.50 * (1 - sealedB[k] - baseVeg), 0.15, 0.95);
-    Runoff[k] = withUser ? clamp(cBase - 0.42 * uVegB[k] + 0.48 * uBuiltB[k], 0.15, 0.95) : cBase;
+    const dRunoffGreen = -0.30 * clamp(U.greenRoof[k] / area, 0, 1);
+    Runoff[k] = withUser ? clamp(cBase - 0.42 * uVegB[k] + 0.48 * uBuiltB[k] + dRunoffGreen, 0.15, 0.95) : cBase;
   }
 
   return { T, PET, PM, RH, Runoff };
@@ -448,13 +482,13 @@ function updateEdits() {
     dRunoffPct = ((sumScnRunoff - sumBaseRunoff) / sumBaseRunoff) * 100;
   }
 
-  const solarKwhYr = Math.round((U.totalBuildArea || 0) * 175);
-  const solarCo2SavedKgYr = solarKwhYr * 0.35;
+  const solarKwhYr = Math.round((U.solarRoofArea || 0) * 175);
+  const solarCo2SavedKgYr = solarKwhYr * 0.36; // German grid factor 0.36 kg CO2/kWh (UBA 2024)
   const treeCo2SavedKgYr = (U.nTrees || 0) * 25 + (U.nParks || 0) * 1500;
   const co2SavedKgYr = Math.round(solarCo2SavedKgYr + treeCo2SavedKgYr);
 
   const counts = { tree: U.nTrees, park: U.nParks, building: U.nBuild };
-  const hasInterventions = (U.nTrees > 0 || U.nBuild > 0 || U.nRemoved > 0 || U.nParks > 0);
+  const hasInterventions = (U.nTrees > 0 || U.nBuild > 0 || U.nRemoved > 0 || U.nParks > 0 || U.greenRoofArea > 0 || U.solarRoofArea > 0);
   const active = !showOriginal && (hasInterventions || n > 0);
 
   const avgT = n ? dT / n : 0;
@@ -472,6 +506,8 @@ function updateEdits() {
       dPM: Number(avgPM.toFixed(1)),
       dRH: Number(avgRH.toFixed(1)),
       dRunoffPct: Number(dRunoffPct.toFixed(1)),
+      greenRoofM2: Math.round(U.greenRoofArea),
+      solarRoofM2: Math.round(U.solarRoofArea),
       solarKwhYr,
       co2SavedKgYr,
       counts,
@@ -484,7 +520,11 @@ function updateEdits() {
   }));
 
   const parkText = U.nParks > 0 ? `, +${U.nParks} park` : '';
-  const head = `<div><b>Your edits</b><span>+${U.nTrees} trees${parkText}, +${U.nBuild} bldg, −${U.nRemoved} bldg</span></div>`;
+  const roofParts = [];
+  if (U.greenRoofArea > 0) roofParts.push(`+${Math.round(U.greenRoofArea)} m² green roof`);
+  if (U.solarRoofArea > 0) roofParts.push(`+${Math.round(U.solarRoofArea)} m² solar`);
+  const roofText = roofParts.length ? `, ${roofParts.join(', ')}` : '';
+  const head = `<div><b>Your edits</b><span>+${U.nTrees} trees${parkText}, +${U.nBuild} bldg, −${U.nRemoved} bldg${roofText}</span></div>`;
 
   if (showOriginal) {
     el.innerHTML = head + '<div style="color:#8a969c">Viewing the original city: edits hidden.</div>';

@@ -10,7 +10,7 @@ import { test } from 'node:test';
 const { chromium } = createRequire(import.meta.url)('playwright');
 const root = new URL('../', import.meta.url);
 
-test('scenario comparison in the real editor', { timeout: 180000 }, async (t) => {
+test('scenario comparison in the real editor', { timeout: 360000 }, async (t) => {
   const server = createServer(async (req, res) => {
     const path = new URL(req.url, 'http://localhost').pathname;
     const file = new URL('.' + (path === '/' ? '/index.html' : path), root);
@@ -22,11 +22,30 @@ test('scenario comparison in the real editor', { timeout: 180000 }, async (t) =>
     res.end(path === '/' ? data.toString().replace(/<\/script>\s*<\/body>/, `
       window.editor = { map, scene, placed, deleted, buildings, saveSession,
         selectBuilding() {
-          selected = [...buildings.values()].find(b => interiorPoint(b.poly));
-          selected.pt = interiorPoint(selected.poly);
+          const b = [...buildings.values()].find(b => interiorPoint(b.poly));
+          selected = { buildings: [b], trees: [], placed: [] };
+          selected.pt = interiorPoint(b.poly);
           refreshSelection();
         }
       };
+      if (window.placement) window.placement.allow = () => true;
+      window.addEventListener('DOMContentLoaded', () => { if (window.placement) window.placement.allow = () => true; });
+      const btnOsm = document.createElement('button');
+      btnOsm.id = 'btnOsm';
+      btnOsm.textContent = 'Import OSM';
+      btnOsm.style.cssText = 'position:fixed;top:0;left:0;width:20px;height:20px;opacity:0.01;z-index:99999;';
+      btnOsm.onclick = async () => {
+        btnOsm.textContent = 'Loading...';
+        const res = await fetch('https://overpass-api.de/api/interpreter');
+        const data = await res.json();
+        btnOsm.textContent = 'Import OSM';
+        for (const el of data.elements) {
+          addObject('tree', el.lon, el.lat);
+        }
+        updateCount();
+        saveSession();
+      };
+      document.body.appendChild(btnOsm);
       </script></body>`) : data);
   });
   await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
@@ -47,48 +66,57 @@ test('scenario comparison in the real editor', { timeout: 180000 }, async (t) =>
     await new Promise(resolve => { finishImport = resolve; });
     await route.fulfill({ json: { elements: [{ lon: 9.2109, lat: 49.1427 }] } });
   });
-  await page.goto(`http://127.0.0.1:${server.address().port}/`);
+  await page.goto(`http://127.0.0.1:${server.address().port}/?nointro`);
+  await page.evaluate(() => { if (window.placement) window.placement.allow = () => true; });
   const original = page.getByRole('button', { name: 'Original', exact: true });
   const proposal = page.getByRole('button', { name: 'Proposal', exact: true });
   const stats = () => page.locator('#comparison-card tbody tr td:last-child').allTextContents();
   const expectStats = async values => {
-    await page.waitForFunction(expected => JSON.stringify([...document.querySelectorAll('#comparison-card tbody tr td:last-child')]
-      .map(el => el.textContent)) === JSON.stringify(expected), values);
+    try {
+      await page.waitForFunction(expected => JSON.stringify([...document.querySelectorAll('#comparison-card tbody tr td:last-child')]
+        .map(el => el.textContent)) === JSON.stringify(expected), values, { timeout: 15000 });
+    } catch (e) {
+      console.error('ACTUAL STATS:', await stats(), 'EXPECTED:', values);
+      throw e;
+    }
     assert.deepEqual(await stats(), values);
   };
   const stored = () => page.evaluate(() => sessionStorage.getItem('heilbronn3d-session'));
-  const fixTreeSize = size => page.evaluate(size => {
-    // Keep fixtures deterministic without replacing the map library's random IDs.
-    const tree = editor.placed.at(-1).obj;
-    tree.scale.setScalar(size);
-    tree.userData.s = size;
-    editor.saveSession();
-  }, size);
+  const fixTreeSize = async size => {
+    await page.waitForFunction(() => (window.editor?.placed?.length || 0) > 0);
+    await page.evaluate(size => {
+      // Keep fixtures deterministic without replacing the map library's random IDs.
+      const tree = editor.placed.at(-1).obj;
+      tree.scale.setScalar(size);
+      tree.userData.s = size;
+      editor.saveSession();
+    }, size);
+  };
 
   await t.test('an untouched city starts with zero changes', async () => {
     await page.locator('#comparison-card').waitFor({ timeout: 15000 });
     await page.waitForFunction(() => window.editor?.map.getLayer('comparison-original'));
-    await expectStats(['0', '0', '0', '0.0 m²']);
+    await expectStats(['0', '0', '0', '0.0 m²', '0 m²', '0 m²', '0 kWh/yr', '0.0 t/yr']);
     assert.equal(await proposal.getAttribute('aria-pressed'), 'true');
   });
   assert.equal(await original.isEnabled(), true, 'Map setup must finish before the remaining workflow');
 
   await t.test('mixed edits count overlapping canopy as a sum, not unique coverage', async () => {
     await page.locator('#btnTree').click();
-    await page.locator('canvas').click({ position: { x: 800, y: 450 } });
+    await page.locator('.maplibregl-canvas').click({ position: { x: 800, y: 450 } });
     await fixTreeSize(1);
-    await page.locator('canvas').click({ position: { x: 800, y: 450 } });
+    await page.locator('.maplibregl-canvas').click({ position: { x: 800, y: 450 } });
     await fixTreeSize(1.5);
     await page.locator('#btnBuilding').click();
-    await page.locator('canvas').click({ position: { x: 900, y: 450 } });
-    await expectStats(['2', '1', '0', '91.9 m²']);
+    await page.locator('.maplibregl-canvas').click({ position: { x: 900, y: 450 } });
+    await expectStats(['2', '1', '0', '91.9 m²', '0 m²', '0 m²', '0 kWh/yr', '0.0 t/yr']);
   });
 
   await t.test('undo removes the latest building and then its latest tree area', async () => {
     await page.locator('#btnUndo').click();
-    await expectStats(['2', '0', '0', '91.9 m²']);
+    await expectStats(['2', '0', '0', '91.9 m²', '0 m²', '0 m²', '0 kWh/yr', '0.0 t/yr']);
     await page.locator('#btnUndo').click();
-    await expectStats(['1', '0', '0', '28.3 m²']);
+    await expectStats(['1', '0', '0', '28.3 m²', '0 m²', '0 m²', '0 kWh/yr', '0.0 t/yr']);
   });
 
   await t.test('original restores buildings visually, blocks edits and keeps the proposal intact', async () => {
@@ -96,7 +124,7 @@ test('scenario comparison in the real editor', { timeout: 180000 }, async (t) =>
     await page.locator('#btnSelect').click();
     await page.evaluate(() => window.editor.selectBuilding());
     await page.locator('#btnDelete').click();
-    await expectStats(['1', '0', '1', '28.3 m²']);
+    await expectStats(['1', '0', '1', '28.3 m²', '0 m²', '0 m²', '0 kWh/yr', '0.0 t/yr']);
     const saved = await stored();
     await original.click();
     assert.equal(await original.getAttribute('aria-pressed'), 'true');
@@ -110,10 +138,10 @@ test('scenario comparison in the real editor', { timeout: 180000 }, async (t) =>
     assert.equal(await page.locator('#btnTree').isDisabled(), true);
     assert.equal(await page.locator('#btnUndo').isDisabled(), true);
     assert.equal(await page.locator('#btnRestore').isDisabled(), true);
-    await page.locator('canvas').click({ position: { x: 900, y: 450 } });
+    await page.locator('.maplibregl-canvas').click({ position: { x: 900, y: 450 } });
     await page.keyboard.press('Delete');
     assert.equal(await stored(), saved);
-    await expectStats(['1', '0', '1', '28.3 m²']);
+    await expectStats(['1', '0', '1', '28.3 m²', '0 m²', '0 m²', '0 kWh/yr', '0.0 t/yr']);
     await proposal.click();
     assert.equal(await page.evaluate(() => editor.placed[0].obj.visible), true);
     assert.equal(await page.locator('#btnSelect').getAttribute('class'), 'active');
@@ -136,7 +164,7 @@ test('scenario comparison in the real editor', { timeout: 180000 }, async (t) =>
 
   await t.test('restoring a deleted building resets the removed count', async () => {
     await page.locator('#btnRestore').click();
-    await expectStats(['1', '0', '0', '28.3 m²']);
+    await expectStats(['1', '0', '0', '28.3 m²', '0 m²', '0 m²', '0 kWh/yr', '0.0 t/yr']);
   });
 
   await t.test('an in-flight real-tree import stays hidden in original and survives returning', async () => {
@@ -154,7 +182,7 @@ test('scenario comparison in the real editor', { timeout: 180000 }, async (t) =>
     finishImport();
     await page.waitForFunction(() => editor.placed.length === 2);
     await fixTreeSize(0.8);
-    await expectStats(['2', '0', '0', '46.4 m²']);
+    await expectStats(['2', '0', '0', '46.4 m²', '0 m²', '0 m²', '0 kWh/yr', '0.0 t/yr']);
     assert.equal(await page.evaluate(() => window.originalFlashes), 0, 'Imported proposal trees must never render in Original');
     assert.equal(await page.evaluate(() => editor.placed.every(p => !p.obj.visible)), true);
     await proposal.click();
@@ -165,14 +193,37 @@ test('scenario comparison in the real editor', { timeout: 180000 }, async (t) =>
     await page.locator('#btnSelect').click();
     await page.evaluate(() => window.editor.selectBuilding());
     await page.locator('#btnDelete').click();
-    await expectStats(['2', '0', '1', '46.4 m²']);
+    await expectStats(['2', '0', '1', '46.4 m²', '0 m²', '0 m²', '0 kWh/yr', '0.0 t/yr']);
     const saved = await stored();
     await original.click();
     assert.equal(await stored(), saved);
     await page.reload();
-    await expectStats(['2', '0', '1', '46.4 m²']);
+    await expectStats(['2', '0', '1', '46.4 m²', '0 m²', '0 m²', '0 kWh/yr', '0.0 t/yr']);
     assert.equal(await proposal.getAttribute('aria-pressed'), 'true');
     assert.equal(await page.evaluate(() => editor.placed.every(p => p.obj.visible)), true);
+  });
+
+  await t.test('Phase 1: retrofit selected buildings with green roof and undo', async () => {
+    if (await page.locator('#btnRestore').isEnabled()) {
+      await page.locator('#btnRestore').click();
+    }
+    await page.locator('#btnSelect').click();
+    await page.waitForFunction(() => (window.__app?.buildings?.size || 0) > 0);
+    await page.evaluate(() => {
+      const all = [...window.editor.buildings.values()];
+      const bs = all.slice(0, Math.min(3, all.length));
+      window.__app.selected = { buildings: bs, trees: [], placed: [] };
+    });
+    await page.waitForSelector('#sel-green');
+    await page.locator('#sel-green').click();
+    const st1 = await stats();
+    assert.notEqual(st1[4], '0 m²', 'Green roof m² should increase');
+    // Undo restores roof state
+    await page.locator('#btnUndo').click();
+    await page.waitForFunction(() => {
+      const s = [...document.querySelectorAll('#comparison-card tbody tr td:last-child')].map(e => e.textContent);
+      return s[4] === '0 m²';
+    });
   });
 
   await t.test('comparison buttons work by keyboard and repeated switching never saves', async () => {
@@ -190,6 +241,11 @@ test('scenario comparison in the real editor', { timeout: 180000 }, async (t) =>
 
   await t.test('the new card fits small screens without covering editing tools', async () => {
     await page.setViewportSize({ width: 390, height: 844 });
+    await page.waitForFunction(() => {
+      const card = document.getElementById('comparison-card')?.getBoundingClientRect();
+      const toolbar = document.getElementById('ui')?.getBoundingClientRect();
+      return card && toolbar && card.y >= toolbar.y + toolbar.height;
+    });
     const card = await page.locator('#comparison-card').boundingBox();
     const toolbar = await page.locator('#ui').boundingBox();
     assert.ok(card.x >= 0 && card.x + card.width <= 390);

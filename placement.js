@@ -11,7 +11,7 @@ import * as THREE from 'three';
 const MLAT = 111320;                       // metres per degree latitude
 const TREE_GAP = 4;                        // m between new trees
 const CADASTRE_GAP = 3;                    // m to an existing (cadastre) tree
-const BUILDING = { w: 16, d: 12, floors: 4, rot: 0 }; // default building spec
+const BUILDING = { w: 16, d: 12, floors: 4, rot: 0, roofType: 'standard' }; // default building spec
 const getBuildingSpec = () => {
   if (!window.__app) window.__app = {};
   if (!window.__app.buildingSpec) window.__app.buildingSpec = { ...BUILDING };
@@ -405,17 +405,19 @@ function ghostRing(type, p) {
 // a see-through 3D tree or building at the cursor (same shapes as in index.html), green or red
 let ghost3d = null;
 function makeGhost3d() {
-  const mat = new THREE.MeshLambertMaterial({ color: 0x43a047, transparent: true, opacity: 0.5, depthWrite: false });
+  const wallMat = new THREE.MeshLambertMaterial({ color: 0x43a047, transparent: true, opacity: 0.5, depthWrite: false });
+  const roofMat = new THREE.MeshLambertMaterial({ color: 0xefece6, transparent: true, opacity: 0.8, depthWrite: false });
   const tree = new THREE.Group();
-  tree.add(new THREE.Mesh(new THREE.CylinderGeometry(0.25, 0.4, 4, 6).translate(0, 2, 0), mat),
-    new THREE.Mesh(new THREE.IcosahedronGeometry(3, 1).scale(1, 1.2, 1).translate(0, 6, 0), mat));
+  tree.add(new THREE.Mesh(new THREE.CylinderGeometry(0.25, 0.4, 4, 6).translate(0, 2, 0), wallMat),
+    new THREE.Mesh(new THREE.IcosahedronGeometry(3, 1).scale(1, 1.2, 1).translate(0, 6, 0), wallMat));
   tree.scale.setScalar(1.2);
   const bGeom = new THREE.BoxGeometry(1, 1, 1);
   bGeom.translate(0, 0.5, 0);
-  const building = new THREE.Mesh(bGeom, mat);
+  const bMats = [wallMat, wallMat, roofMat, wallMat, wallMat, wallMat];
+  const building = new THREE.Mesh(bGeom, bMats);
   tree.visible = building.visible = false;
   app.scene.add(tree, building);
-  return { tree, building, mat };
+  return { tree, building, mat: wallMat, roofMat };
 }
 function showGhost(type, pt, reason, point) {
   map.getSource('placement-ghost').setData({ type: 'Feature', properties: { ok: !reason },
@@ -425,9 +427,12 @@ function showGhost(type, pt, reason, point) {
   if (type === 'building') {
     const spec = getBuildingSpec();
     const w = spec.w || 16, d = spec.d || 12, floors = spec.floors || 4, rot = spec.rot || 0;
+    const roofType = spec.roofType || 'standard';
     const h = floors * 3.2;
     obj.scale.set(w, h, d);
     obj.rotation.y = (rot * Math.PI) / 180;
+    const roofColor = roofType === 'green' ? 0x2e7d32 : roofType === 'solar' ? 0x1565c0 : 0xefece6;
+    ghost3d.roofMat.color.set(reason ? 0xe53935 : roofColor);
   }
   obj.position.copy(app.toScene(pt[0], pt[1], app.groundAt(pt[0], pt[1])));
   obj.visible = true;
@@ -451,16 +456,29 @@ function say(html) { info.innerHTML = html; info.style.display = html ? 'block' 
 let lastCursorLL = null;
 let lastCursorPoint = null;
 
+function cycleRoofType() {
+  const spec = getBuildingSpec();
+  const next = spec.roofType === 'standard' ? 'green' : spec.roofType === 'green' ? 'solar' : 'standard';
+  spec.roofType = next;
+  if (window.__app) window.__app.buildingSpec = spec;
+  updateBuildingPill();
+  refreshGhostBuilding();
+}
+
 function updateBuildingPill() {
   if (placeType() !== 'building' || tool || brush) return;
   const spec = getBuildingSpec();
+  const roof = spec.roofType || 'standard';
+  const roofBadge = roof === 'green' ? '🌱 Green roof' : roof === 'solar' ? '☀️ Solar roof' : '🏢 Standard roof';
   const html = `🏢 <b>${spec.w}×${spec.d} m · ${spec.floors} fl · ${spec.rot}°</b> ` +
+    `<button id="bld-roof" title="Cycle roof type (standard → green → solar, shortcut: G)">${roofBadge} (G)</button> ` +
     `<button id="bld-rot" title="Rotate 15° (shortcut: R or [ / ])">↻ Rotate (R)</button> ` +
     `<span style="margin-left:3px;font-size:11px;color:#64748b">W</span><button id="bld-w-dec" title="Narrower">−</button><button id="bld-w-inc" title="Wider">+</button> ` +
     `<span style="margin-left:3px;font-size:11px;color:#64748b">D</span><button id="bld-d-dec" title="Shorter">−</button><button id="bld-d-inc" title="Deeper">+</button> ` +
     `<span style="margin-left:3px;font-size:11px;color:#64748b">Floors</span><button id="bld-fl-dec" title="Fewer floors (−)">−</button><button id="bld-fl-inc" title="More floors (+)">+</button>`;
   say(html);
 
+  document.getElementById('bld-roof')?.addEventListener('click', cycleRoofType);
   document.getElementById('bld-rot')?.addEventListener('click', () => adjustBuilding({ rot: 15 }));
   document.getElementById('bld-w-dec')?.addEventListener('click', () => adjustBuilding({ dw: -2 }));
   document.getElementById('bld-w-inc')?.addEventListener('click', () => adjustBuilding({ dw: 2 }));
@@ -468,6 +486,29 @@ function updateBuildingPill() {
   document.getElementById('bld-d-inc')?.addEventListener('click', () => adjustBuilding({ dd: 2 }));
   document.getElementById('bld-fl-dec')?.addEventListener('click', () => adjustBuilding({ dfl: -1 }));
   document.getElementById('bld-fl-inc')?.addEventListener('click', () => adjustBuilding({ dfl: 1 }));
+}
+
+function updateSelectionPill(sel) {
+  if (tool || brush) return;
+  const isSelectMode = activeTool() === 'btnSelect' || document.getElementById('btnSelect')?.classList.contains('active');
+  if (!isSelectMode) return;
+
+  const bs = !sel ? [] : Array.isArray(sel) ? sel : sel.buildings ? sel.buildings : (sel.feature || sel.poly) ? [sel] : [];
+  const plBuildings = sel?.placed ? sel.placed.filter(p => p.type === 'building') : [];
+  const count = bs.length + plBuildings.length;
+
+  if (count > 0) {
+    const label = count === 1 ? '1 building' : `${count} buildings`;
+    say(`🏢 <b>${label}</b> ` +
+      `<button id="sel-green" title="Add green roof">🌱 Green roof</button> ` +
+      `<button id="sel-solar" title="Add solar roof">☀️ Solar roof</button> ` +
+      `<button id="sel-demolish" title="Demolish selected (Del)">🗑 Demolish</button>`);
+    document.getElementById('sel-green')?.addEventListener('click', () => window.__app?.retrofitSelected?.('green'));
+    document.getElementById('sel-solar')?.addEventListener('click', () => window.__app?.retrofitSelected?.('solar'));
+    document.getElementById('sel-demolish')?.addEventListener('click', () => window.__app?.deleteSelected?.());
+  } else {
+    say('');
+  }
 }
 
 function adjustBuilding({ rot = 0, dw = 0, dd = 0, dfl = 0 }) {
@@ -913,11 +954,14 @@ function init() {
       if (placeType() === 'building' && !tool && !brush) {
         updateBuildingPill();
         refreshGhostBuilding();
+      } else if ((activeTool() === 'btnSelect' || document.getElementById('btnSelect')?.classList.contains('active')) && !tool && !brush) {
+        updateSelectionPill(window.__app?.selected || null);
       } else if (!tool && !brush) {
         say('');
       }
     }, 10);
   });
+  window.addEventListener('selection-changed', (e) => updateSelectionPill(e.detail));
   const ui = document.getElementById('ui');
   if (ui) new ResizeObserver(() => { info.style.top = `${ui.offsetTop + ui.offsetHeight + 8}px`; }).observe(ui);
 
@@ -986,6 +1030,11 @@ function init() {
     if (e.metaKey || e.ctrlKey || e.altKey) return;
 
     if (placeType() === 'building' && !tool && !brush) {
+      if (e.key === 'g' || e.key === 'G') {
+        e.preventDefault();
+        cycleRoofType();
+        return;
+      }
       if (e.key === 'r' || e.key === 'R') {
         e.preventDefault();
         adjustBuilding({ rot: e.shiftKey ? -15 : 15 });
@@ -1054,7 +1103,8 @@ function init() {
 
 // Asked by index.html before placing a single tree or building. Shows the reason when refused.
 window.placement = {
-  spaceAt: (lngLat) => (ensureGeo(), spaceAt(toM(lngLat))), // for testing in the console
+  spaceAt: (lngLat) => (ensureGeo(), spaceAt(toM(Array.isArray(lngLat) ? lngLat : [lngLat.lng, lngLat.lat]))), // for testing in the console
+  check: (type, pt) => (ensureGeo(), check(type, Array.isArray(pt) ? pt : [pt.lng, pt.lat])),
   allow(type, e) {
     if (!map) return true;
     const pt = [e.lngLat.lng, e.lngLat.lat];

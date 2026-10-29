@@ -91,7 +91,9 @@
 import * as THREE from 'three';
 
 window.__app = window.__app || {};
-window.__app.buildingSpec = window.__app.buildingSpec || { w: 16, d: 12, floors: 4, rot: 0 };
+window.__app.buildingSpec = window.__app.buildingSpec || { w: 16, d: 12, floors: 4, rot: 0, roofType: 'standard' };
+const retrofitted = window.__app.retrofitted || {};
+window.__app.retrofitted = retrofitted;
 
 import { addCadastre } from './cadastre.js';
 let cadastre = null;
@@ -197,7 +199,9 @@ function makeBuilding(lng, lat, opts = {}) {
     t.repeat.set(Math.max(1, Math.round(repeatX / 4)), floors);
     return new THREE.MeshLambertMaterial({ map: t });
   };
-  const roof = new THREE.MeshLambertMaterial({ color: 0xefece6 });
+  const roofType = opts.roofType ?? spec.roofType ?? 'standard';
+  const roofColor = roofType === 'green' ? 0x2e7d32 : roofType === 'solar' ? 0x1565c0 : 0xefece6;
+  const roof = new THREE.MeshLambertMaterial({ color: roofColor });
   const bottom = new THREE.MeshLambertMaterial({ color: 0xe8e4dc });
   // order: +x, -x, +y, -y, +z, -z
   const mats = [side(d), side(d), roof, bottom, side(w), side(w)];
@@ -206,7 +210,7 @@ function makeBuilding(lng, lat, opts = {}) {
   const p = toScene(lng, lat, groundAt(lng, lat));
   mesh.position.set(p.x, p.y + h / 2, p.z);
   mesh.userData = {
-    w, d, floors, rot,
+    w, d, floors, rot, roofType,
     lift: h / 2,
     hx: w / 2, hz: d / 2,
     y0: 0, y1: h,
@@ -219,6 +223,9 @@ function makeBuilding(lng, lat, opts = {}) {
 function addObject(type, lng, lat, saved = {}) {
   const bOpts = type === 'building' ? { ...window.__app?.buildingSpec, ...saved } : saved;
   const obj = type === 'tree' ? makeTree(lng, lat, saved.s, saved.ci) : makeBuilding(lng, lat, bOpts);
+  if (document.querySelector('#comparison-card button')?.getAttribute('aria-pressed') === 'true') {
+    obj.visible = false;
+  }
   scene.add(obj);
   placed.push({ obj, type, lng, lat });
   return obj;
@@ -347,6 +354,7 @@ function collectBuildings() {
       for (const [x, y] of ring) { x0 = Math.min(x0, x); x1 = Math.max(x1, x); y0 = Math.min(y0, y); y1 = Math.max(y1, y); }
       const a = toScene(x0, y0, 0), c = toScene(x1, y1, 0);
       const bprops = { ...props, bid: nextBid++ };
+      if (retrofitted[key]) bprops.retrofit = retrofitted[key];
       buildings.set(key, {
         key, poly, props: bprops,
         bbox: [x0, y0, x1, y1],
@@ -367,7 +375,7 @@ function collectBuildings() {
 }
 
 function isDeleted(b) {
-  return deleted.some(p => p[0] >= b.bbox[0] && p[0] <= b.bbox[2] && p[1] >= b.bbox[1] && p[1] <= b.bbox[3] && inPolygon(p, b.poly));
+  return deleted.some(p => p && b && b.bbox && p[0] >= b.bbox[0] && p[0] <= b.bbox[2] && p[1] >= b.bbox[1] && p[1] <= b.bbox[3] && inPolygon(p, b.poly));
 }
 function refreshBuildings() {
   const src = map.getSource('buildings-own');
@@ -380,17 +388,18 @@ function refreshBuildings() {
 }
 function refreshSelection() {
   const src = map.getSource('building-selected');
-  const bs = selected ? selected.buildings : [];
+  const bs = !selected ? [] : Array.isArray(selected) ? selected : selected.buildings ? selected.buildings : (selected.feature || selected.poly) ? [selected] : [];
   if (src) src.setData(bs.length
-    ? { type: 'FeatureCollection', features: bs.map(g => g.feature) }
+    ? { type: 'FeatureCollection', features: bs.map(g => g.feature || g) }
     : EMPTY);
   if (map.getLayer('buildings-own')) {
     map.setFilter('buildings-own', bs.length
-      ? ['!', ['in', ['get', 'bid'], ['literal', bs.map(g => g.props.bid)]]]
+      ? ['!', ['in', ['get', 'bid'], ['literal', bs.map(g => (g.props && g.props.bid) || g.bid)]]]
       : null);
   }
   updateHighlight();
   updateCount();
+  window.dispatchEvent(new CustomEvent('selection-changed', { detail: selected }));
 }
 function updateHighlight() {
   let n = 0;
@@ -660,7 +669,7 @@ function deleteSelected() {
   const tag = (e) => { if (batch) e.batch = batch; return e; };
 
   if (bs.length) {
-    const pts = bs.map(g => g.pt);
+    const pts = bs.map(g => g.pt || (g.poly ? interiorPoint(g.poly) : null)).filter(Boolean);
     pts.forEach(p => deleted.push(p));
     history.push(tag({ kind: 'building', pts }));
   }
@@ -681,12 +690,46 @@ function deleteSelected() {
       w: u.w,
       d: u.d,
       floors: u.floors,
-      rot: u.rot
+      rot: u.rot,
+      roofType: u.roofType
     }));
   }
   selected = null;
   if (bs.length) refreshBuildings(); else refreshSelection();
   saveSession();
+}
+
+function retrofitSelected(type) {
+  if (!selected) return;
+  const bs = !selected ? [] : Array.isArray(selected) ? selected : selected.buildings ? selected.buildings : (selected.feature || selected.poly) ? [selected] : [];
+  const pl = selected.placed || [];
+  const changed = [];
+
+  for (const b of bs) {
+    const prev = retrofitted[b.key] || b.props.retrofit || null;
+    retrofitted[b.key] = type;
+    b.props.retrofit = type;
+    changed.push({ kind: 'map', key: b.key, b, prev, next: type });
+  }
+
+  for (const rec of pl) {
+    if (rec.type === 'building' && rec.obj) {
+      const prevRoof = rec.obj.userData?.roofType || 'standard';
+      rec.obj.userData.roofType = type;
+      const roofColor = type === 'green' ? 0x2e7d32 : type === 'solar' ? 0x1565c0 : 0xefece6;
+      if (Array.isArray(rec.obj.material) && rec.obj.material[2]) {
+        rec.obj.material[2] = new THREE.MeshLambertMaterial({ color: roofColor });
+      }
+      changed.push({ kind: 'placed', placedRec: rec, prevRoof, nextRoof: type });
+    }
+  }
+
+  if (changed.length) {
+    history.push({ kind: 'retrofit', changed });
+    refreshBuildings();
+    saveSession();
+    window.dispatchEvent(new Event('scene-changed'));
+  }
 }
 
 function restoreEntry(h) {
@@ -700,6 +743,26 @@ function restoreEntry(h) {
     if (cadastre) cadastre.show(h.i);
   } else if (h.kind === 'placed') {
     addObject(h.type, h.lng, h.lat, h);
+  } else if (h.kind === 'retrofit') {
+    for (const item of h.changed) {
+      if (item.kind === 'placed' && item.placedRec) {
+        const roofType = item.prevRoof || 'standard';
+        item.placedRec.obj.userData.roofType = roofType;
+        const roofColor = roofType === 'green' ? 0x2e7d32 : roofType === 'solar' ? 0x1565c0 : 0xefece6;
+        if (Array.isArray(item.placedRec.obj.material) && item.placedRec.obj.material[2]) {
+          item.placedRec.obj.material[2] = new THREE.MeshLambertMaterial({ color: roofColor });
+        }
+      } else {
+        if (item.prev) {
+          retrofitted[item.key] = item.prev;
+          if (item.b) item.b.props.retrofit = item.prev;
+        } else {
+          delete retrofitted[item.key];
+          if (item.b) delete item.b.props.retrofit;
+        }
+      }
+    }
+    refreshBuildings();
   }
 }
 function restoreLastDeleted() {
@@ -726,9 +789,11 @@ function saveSession() {
         w: p.obj.userData?.w,
         d: p.obj.userData?.d,
         floors: p.obj.userData?.floors,
-        rot: p.obj.userData?.rot
+        rot: p.obj.userData?.rot,
+        roofType: p.obj.userData?.roofType || 'standard'
       })),
-      history
+      history,
+      retrofitted
     }));
   } catch (err) { console.warn('Could not save session', err); }
 }
@@ -736,6 +801,12 @@ function restoreSession() {
   let s = null;
   try { s = JSON.parse(sessionStorage.getItem(STORE_KEY) || 'null'); } catch { /* ignore */ }
   if (!s) return;
+  if (s.retrofitted) {
+    Object.assign(retrofitted, s.retrofitted);
+    for (const b of buildings.values()) {
+      if (retrofitted[b.key]) b.props.retrofit = retrofitted[b.key];
+    }
+  }
   (s.placed || []).forEach(p => addObject(p.type, p.lng, p.lat, p));
   let h = s.history;
   if (!h && s.deleted) h = s.deleted.map(d => ({ kind: 'building', pt: Array.isArray(d) ? d : d && d.pt })).filter(e => e.pt);
@@ -796,6 +867,26 @@ map.on('load', () => {
       'fill-extrusion-height': ['coalesce', ['get', 'render_height'], 8],
       'fill-extrusion-base': ['coalesce', ['get', 'render_min_height'], 0],
       'fill-extrusion-opacity': 0.9
+    }
+  });
+
+  map.addLayer({
+    id: 'buildings-retrofitted',
+    type: 'fill-extrusion',
+    source: 'buildings-own',
+    minzoom: 14,
+    filter: ['!=', ['coalesce', ['get', 'retrofit'], ''], ''],
+    paint: {
+      'fill-extrusion-color': [
+        'match',
+        ['get', 'retrofit'],
+        'green', '#2e7d32',
+        'solar', '#1565c0',
+        '#efece6'
+      ],
+      'fill-extrusion-base': ['coalesce', ['get', 'render_height'], 8],
+      'fill-extrusion-height': ['+', ['coalesce', ['get', 'render_height'], 8], 0.35],
+      'fill-extrusion-opacity': 0.95
     }
   });
 
@@ -938,6 +1029,10 @@ btnTree.onclick = () => setMode('tree', 'btnTree');
 btnBuilding.onclick = () => setMode('building', 'btnBuilding');
 btnNav.onclick = () => setMode('nav', 'btnNav');
 btnUndo.onclick = () => {
+  if (history.length && history[history.length - 1].kind === 'retrofit') {
+    restoreLastDeleted();
+    return;
+  }
   const last = placed.pop();
   if (last) scene.remove(last.obj);
   updateCount();
@@ -955,14 +1050,19 @@ document.addEventListener('keydown', (e) => {
 });
 
 window.__app = {
-  buildingSpec: window.__app?.buildingSpec || { w: 16, d: 12, floors: 4, rot: 0 },
+  buildingSpec: window.__app?.buildingSpec || { w: 16, d: 12, floors: 4, rot: 0, roofType: 'standard' },
   map,
   scene,
   placed,
   deleted,
+  get selected() { return selected; },
+  set selected(v) { selected = v; refreshSelection(); },
+  retrofitted,
+  retrofitSelected,
   buildings,
   isDeleted,
   refreshBuildings,
+  deleteSelected,
   addObject,
   updateCount,
   saveSession,
