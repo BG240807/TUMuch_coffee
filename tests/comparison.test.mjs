@@ -118,7 +118,7 @@ test('scenario comparison in the real editor', { timeout: 480000 }, async (t) =>
   await t.test('an untouched city starts with zero changes', async () => {
     await page.locator('#comparison-card').waitFor({ timeout: 15000 });
     await page.waitForFunction(() => window.editor?.map.getLayer('comparison-original'));
-    await expectStats(['0', '0', '0', '0.0 m²', '0 m²', '0 m²', '0 kWh/yr', '0.0 t/yr']);
+    await expectStats(['0', '0', '0', '0.0 m²', '0 m²', '0 m²', '0 kWh/yr', '0.0 t/yr', '0 m']);
     assert.equal(await proposal.getAttribute('aria-pressed'), 'true');
   });
   assert.equal(await original.isEnabled(), true, 'Map setup must finish before the remaining workflow');
@@ -131,14 +131,14 @@ test('scenario comparison in the real editor', { timeout: 480000 }, async (t) =>
     await fixTreeSize(1.5);
     await page.locator('#btnBuilding').click();
     await page.locator('.maplibregl-canvas').click({ position: { x: 900, y: 450 }, force: true });
-    await expectStats(['2', '1', '0', '91.9 m²', '0 m²', '0 m²', '0 kWh/yr', '0.0 t/yr']);
+    await expectStats(['2', '1', '0', '91.9 m²', '0 m²', '0 m²', '0 kWh/yr', '0.0 t/yr', '0 m']);
   });
 
   await t.test('undo removes the latest building and then its latest tree area', async () => {
     await page.locator('#btnUndo').click();
-    await expectStats(['2', '0', '0', '91.9 m²', '0 m²', '0 m²', '0 kWh/yr', '0.0 t/yr']);
+    await expectStats(['2', '0', '0', '91.9 m²', '0 m²', '0 m²', '0 kWh/yr', '0.0 t/yr', '0 m']);
     await page.locator('#btnUndo').click();
-    await expectStats(['1', '0', '0', '28.3 m²', '0 m²', '0 m²', '0 kWh/yr', '0.0 t/yr']);
+    await expectStats(['1', '0', '0', '28.3 m²', '0 m²', '0 m²', '0 kWh/yr', '0.0 t/yr', '0 m']);
   });
 
   await t.test('original restores buildings visually, blocks edits and keeps the proposal intact', async () => {
@@ -146,7 +146,7 @@ test('scenario comparison in the real editor', { timeout: 480000 }, async (t) =>
     await page.locator('#btnSelect').click();
     await page.evaluate(() => window.editor.selectBuilding());
     await page.locator('#btnDelete').click();
-    await expectStats(['1', '0', '1', '28.3 m²', '0 m²', '0 m²', '0 kWh/yr', '0.0 t/yr']);
+    await expectStats(['1', '0', '1', '28.3 m²', '0 m²', '0 m²', '0 kWh/yr', '0.0 t/yr', '0 m']);
     const saved = await stored();
     await original.click();
     try {
@@ -164,7 +164,7 @@ test('scenario comparison in the real editor', { timeout: 480000 }, async (t) =>
       await page.locator('.maplibregl-canvas').click({ position: { x: 900, y: 450 }, force: true });
       await page.keyboard.press('Delete');
       assert.equal(await stored(), saved);
-      await expectStats(['1', '0', '1', '28.3 m²', '0 m²', '0 m²', '0 kWh/yr', '0.0 t/yr']);
+      await expectStats(['1', '0', '1', '28.3 m²', '0 m²', '0 m²', '0 kWh/yr', '0.0 t/yr', '0 m']);
     } finally {
       if (await original.getAttribute('aria-pressed') === 'true') {
         await proposal.click();
@@ -191,7 +191,7 @@ test('scenario comparison in the real editor', { timeout: 480000 }, async (t) =>
 
   await t.test('restoring a deleted building resets the removed count', async () => {
     await page.locator('#btnRestore').click();
-    await expectStats(['1', '0', '0', '28.3 m²', '0 m²', '0 m²', '0 kWh/yr', '0.0 t/yr']);
+    await expectStats(['1', '0', '0', '28.3 m²', '0 m²', '0 m²', '0 kWh/yr', '0.0 t/yr', '0 m']);
   });
 
   await t.test('an in-flight real-tree import stays hidden in original and survives returning', async () => {
@@ -209,7 +209,7 @@ test('scenario comparison in the real editor', { timeout: 480000 }, async (t) =>
     finishImport();
     await page.waitForFunction(() => editor.placed.length === 2);
     await fixTreeSize(0.8);
-    await expectStats(['2', '0', '0', '46.4 m²', '0 m²', '0 m²', '0 kWh/yr', '0.0 t/yr']);
+    await expectStats(['2', '0', '0', '46.4 m²', '0 m²', '0 m²', '0 kWh/yr', '0.0 t/yr', '0 m']);
     assert.equal(await page.evaluate(() => window.originalFlashes), 0, 'Imported proposal trees must never render in Original');
     assert.equal(await page.evaluate(() => editor.placed.every(p => !p.obj.visible)), true);
     await proposal.click();
@@ -220,12 +220,12 @@ test('scenario comparison in the real editor', { timeout: 480000 }, async (t) =>
     await page.locator('#btnSelect').click();
     await page.evaluate(() => window.editor.selectBuilding());
     await page.locator('#btnDelete').click();
-    await expectStats(['2', '0', '1', '46.4 m²', '0 m²', '0 m²', '0 kWh/yr', '0.0 t/yr']);
+    await expectStats(['2', '0', '1', '46.4 m²', '0 m²', '0 m²', '0 kWh/yr', '0.0 t/yr', '0 m']);
     const saved = await stored();
     await original.click();
     assert.equal(await stored(), saved);
     await page.reload();
-    await expectStats(['2', '0', '1', '46.4 m²', '0 m²', '0 m²', '0 kWh/yr', '0.0 t/yr']);
+    await expectStats(['2', '0', '1', '46.4 m²', '0 m²', '0 m²', '0 kWh/yr', '0.0 t/yr', '0 m']);
     assert.equal(await proposal.getAttribute('aria-pressed'), 'true');
     assert.equal(await page.evaluate(() => editor.placed.every(p => p.obj.visible)), true);
   });
@@ -255,6 +255,36 @@ test('scenario comparison in the real editor', { timeout: 480000 }, async (t) =>
       const s = [...document.querySelectorAll('#comparison-card tbody tr td:last-child')].map(e => e.textContent);
       return s[4] === '0 m²';
     });
+  });
+
+  await t.test('Phase 2: turn Allee car-free, verify trees, comparison card length, and undo', async () => {
+    await page.waitForFunction(() => typeof window.placement?.convertRoadCarFree === 'function');
+    const treesBefore = await page.evaluate(() => window.editor.placed.filter(p => p.type === 'tree').length);
+    const converted = await page.evaluate(() => window.placement.convertRoadCarFree('Allee'));
+    assert.ok(converted, 'Allee should be found and converted');
+    assert.ok(converted.totalLen > 0, 'Allee length should be greater than 0');
+
+    // Comparison card should show car-free street length
+    await page.waitForFunction(() => {
+      const s = [...document.querySelectorAll('#comparison-card tbody tr td:last-child')].map(e => e.textContent);
+      return s[8] && s[8] !== '0 m';
+    }, { timeout: 15000 });
+
+    const stAfter = await stats();
+    assert.notEqual(stAfter[8], '0 m', 'Car-free street length should not be 0 m');
+
+    // Trees should be placed along both edges
+    const treesAfter = await page.evaluate(() => window.editor.placed.filter(p => p.type === 'tree').length);
+    assert.ok(treesAfter > treesBefore, 'Street trees should be planted');
+
+    // Undo restores car-free street
+    await page.locator('#btnUndo').click();
+    await page.waitForFunction(() => {
+      const s = [...document.querySelectorAll('#comparison-card tbody tr td:last-child')].map(e => e.textContent);
+      return s[8] === '0 m';
+    }, { timeout: 15000 });
+    const treesUndone = await page.evaluate(() => window.editor.placed.filter(p => p.type === 'tree').length);
+    assert.equal(treesUndone, treesBefore, 'Undo should remove all planted street trees');
   });
 
   await t.test('comparison buttons work by keyboard and repeated switching never saves', async () => {

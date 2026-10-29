@@ -26,6 +26,7 @@ export function addComparisonCard({ map, scene, placed, deleted }) {
         <tr><th scope="row">Solar roof</th><td>0 m²</td><td>0 m²</td></tr>
         <tr><th scope="row">Solar energy</th><td>0 kWh/yr</td><td>0 kWh/yr</td></tr>
         <tr><th scope="row">CO₂ avoided</th><td>0.0 t/yr</td><td>0.0 t/yr</td></tr>
+        <tr><th scope="row">Car-free street</th><td>0 m</td><td>0 m</td></tr>
       </tbody>
     </table>
     <p>Canopy: sum of circular tree crowns, including overlaps. Not city-wide coverage or a climate prediction.</p>
@@ -109,6 +110,13 @@ export function addComparisonCard({ map, scene, placed, deleted }) {
     const solarKwh = Math.round(solarM2 * 175);
     const co2Tons = ((solarKwh * 0.36) / 1000).toFixed(1);
 
+    let carFreeM = 0;
+    if (window.__app?.carFreeLines) {
+      for (const cf of window.__app.carFreeLines) {
+        carFreeM += cf.lengthM || 0;
+      }
+    }
+
     const values = [
       trees,
       buildings,
@@ -117,7 +125,8 @@ export function addComparisonCard({ map, scene, placed, deleted }) {
       `${Math.round(greenM2).toLocaleString()} m²`,
       `${Math.round(solarM2).toLocaleString()} m²`,
       `${Math.round(solarKwh).toLocaleString()} kWh/yr`,
-      `${co2Tons} t/yr`
+      `${co2Tons} t/yr`,
+      `${Math.round(carFreeM).toLocaleString()} m`
     ];
     values.forEach((value, i) => {
       if (cells[i] && cells[i].textContent !== String(value)) cells[i].textContent = value;
@@ -133,7 +142,7 @@ export function addComparisonCard({ map, scene, placed, deleted }) {
     }
     document.querySelectorAll('#ui button').forEach(button => { button.disabled = show && button.id !== 'btnNav'; });
     if (!show && previousTool) previousTool.click();
-    for (const id of ['buildings-3d', 'buildings-own', 'buildings-retrofitted']) {
+    for (const id of ['buildings-3d', 'buildings-own', 'buildings-retrofitted', 'carfree-lines-fill', 'carfree-lines-casing', 'carfree-lines-center']) {
       if (map.getLayer(id)) map.setLayoutProperty(id, 'visibility', show ? 'none' : 'visible');
     }
     map.setLayoutProperty('comparison-original', 'visibility', show ? 'visible' : 'none');

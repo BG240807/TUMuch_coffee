@@ -99,14 +99,14 @@ const bboxOf = (pts, pad = 0) => {
   return [x0 - pad, y0 - pad, x1 + pad, y1 + pad];
 };
 
-let geo = { lines: new Grid(), areas: new Grid(), names: new Grid(), houses: new Grid(), trees: new Grid() };
+let geo = { lines: new Grid(), areas: new Grid(), names: new Grid(), houses: new Grid(), trees: new Grid(), roads: new Grid() };
 let geoDirty = true;
 const lineList = (g) => (g.type === 'LineString' ? [g.coordinates] : g.type === 'MultiLineString' ? g.coordinates : []);
 const polyList = (g) => (g.type === 'Polygon' ? [g.coordinates] : g.type === 'MultiPolygon' ? g.coordinates : []);
 
 function rebuildGeo() {
   if (!map.getSource('openmaptiles') || map.getZoom() < 13) return;
-  const g = { lines: new Grid(), areas: new Grid(), names: new Grid(), houses: new Grid(), trees: geo.trees };
+  const g = { lines: new Grid(), areas: new Grid(), names: new Grid(), houses: new Grid(), trees: geo.trees, roads: new Grid() };
   const src = (sourceLayer) => map.querySourceFeatures('openmaptiles', { sourceLayer });
   const addLine = (coords, half, kind) => {
     const m = coords.map(toM);
@@ -128,7 +128,26 @@ function rebuildGeo() {
     if (p.class === 'service' && p.service === 'parking_aisle') continue;
     const half = ROAD_HALF[p.class] ?? RAIL_HALF[p.class];
     if (!half) continue;
-    for (const line of lineList(f.geometry)) addLine(line, half, RAIL_HALF[p.class] ? 'railway' : 'road');
+    const isCarRoad = !!ROAD_HALF[p.class];
+    for (const line of lineList(f.geometry)) {
+      addLine(line, half, RAIL_HALF[p.class] ? 'railway' : 'road');
+      if (isCarRoad) {
+        const m = line.map(toM);
+        let len = 0;
+        for (let i = 0; i < m.length - 1; i++) len += distM(m[i], m[i + 1]);
+        const roadItem = {
+          m,
+          coords: line,
+          half,
+          class: p.class,
+          lengthM: len,
+          feature: f
+        };
+        for (let i = 0; i < m.length - 1; i++) {
+          g.roads.add(roadItem, bboxOf([m[i], m[i + 1]], half + 8));
+        }
+      }
+    }
   }
   for (const f of src('transportation_name')) {
     if (!f.properties.name) continue;
@@ -174,6 +193,79 @@ function houseAt(p) {
 }
 const placedNear = (p, type, m) => app.placed.some((o) => o.type === type && distM(p, toM([o.lng, o.lat])) < m);
 const cadastreNear = (p, m) => geo.trees.near(bboxOf([p], m)).some((t) => distM(p, t) < m);
+
+function roadAt(p) {
+  ensureGeo();
+  let best = null, bd = Infinity;
+  for (const r of geo.roads.near(bboxOf([p], 25))) {
+    for (let i = 0; i < r.m.length - 1; i++) {
+      const d = segDist(p, r.m[i], r.m[i + 1]);
+      if (d < r.half + 8 && d < bd) {
+        bd = d;
+        best = r;
+      }
+    }
+  }
+  if (!best) return null;
+  let name = null;
+  for (const pt of [best.m[Math.floor(best.m.length / 2)], best.m[0], best.m[best.m.length - 1]]) {
+    name = streetName(pt);
+    if (name) break;
+  }
+  const matched = [best];
+  if (name) {
+    const seen = new Set([best]);
+    for (const r of geo.roads.near(bboxOf([p], 600))) {
+      if (seen.has(r)) continue;
+      let rName = null;
+      for (const pt of [r.m[Math.floor(r.m.length / 2)], r.m[0], r.m[r.m.length - 1]]) {
+        rName = streetName(pt);
+        if (rName) break;
+      }
+      if (rName === name) {
+        seen.add(r);
+        matched.push(r);
+      }
+    }
+  }
+  let totalLen = 0;
+  for (const r of matched) totalLen += r.lengthM;
+  return {
+    primary: best,
+    matched,
+    name,
+    half: best.half,
+    totalLen: Math.round(totalLen)
+  };
+}
+
+function computeStreetTreeSpots(matchedRoads, spacing = 12) {
+  const spots = [];
+  for (const r of matchedRoads) {
+    const m = r.m;
+    const half = Math.max(3, r.half || 6);
+    for (let i = 0; i < m.length - 1; i++) {
+      const a = m[i], b = m[i + 1];
+      const dx = b[0] - a[0], dy = b[1] - a[1];
+      const segLen = Math.hypot(dx, dy);
+      if (segLen < 8) continue;
+      const nx = -dy / segLen, ny = dx / segLen;
+      const numSteps = Math.max(1, Math.floor(segLen / spacing));
+      for (let s = 0.5; s < numSteps; s++) {
+        const cx = a[0] + (s / numSteps) * dx;
+        const cy = a[1] + (s / numSteps) * dy;
+        const leftSpot = [cx + nx * (half + 0.5), cy + ny * (half + 0.5)];
+        const rightSpot = [cx - nx * (half + 0.5), cy - ny * (half + 0.5)];
+        for (const sp of [leftSpot, rightSpot]) {
+          if (areaAt(sp, 'water') || houseAt(sp) || cadastreNear(sp, 3.5)) continue;
+          if (spots.some((existing) => distM(existing, sp) < 6)) continue;
+          spots.push(sp);
+        }
+      }
+    }
+  }
+  return spots;
+}
 
 // ---------- rules for single objects ----------
 // Returns null if allowed, otherwise a short reason. pt is [lng, lat].
@@ -590,13 +682,16 @@ function stopTool() {
   hover = null;
   pending = null;
   clearPreview();
+  map.getSource('carfree-hover')?.setData(EMPTY);
   map.doubleClickZoom.enable();
   map.getCanvas().style.cursor = '';
   btn.classList.remove('active');
+  btnCarFree?.classList.remove('active');
   setTip(null);
   // always leave a normal tool active (the scenario comparison restores "the previous tool")
   if (!document.querySelector('#ui button.active')) document.getElementById('btnNav').click();
   drawState();
+  drawCarFreeState();
   if (placeType() === 'building') updateBuildingPill(); else say('');
 }
 // ask before changing anything; offers keeping the buildings when there are any
@@ -665,8 +760,19 @@ function sinkOut(features) {
     if (t < 1) requestAnimationFrame(frame); else src.setData(EMPTY);
   })(t0);
 }
-function floatText(ringM, text) {
-  const p = map.project(toLL(ringM.length > 2 ? centroid(ringM) : ringM[0]));
+function floatText(targetM, text) {
+  if (!map || !targetM) return;
+  let pt;
+  if (Array.isArray(targetM) && typeof targetM[0] === 'number') {
+    pt = targetM;
+  } else if (Array.isArray(targetM) && targetM.length > 2 && Array.isArray(targetM[0])) {
+    pt = centroid(targetM);
+  } else if (Array.isArray(targetM) && targetM.length > 0 && Array.isArray(targetM[0])) {
+    pt = targetM[0];
+  } else {
+    return;
+  }
+  const p = map.project(toLL(pt));
   const el = Object.assign(document.createElement('div'), { className: 'pl-float', textContent: text });
   el.style.left = `${p.x}px`;
   el.style.top = `${p.y}px`;
@@ -750,6 +856,110 @@ function undoArea() {
 function saveAreas() { try { sessionStorage.setItem(STORE_KEY, JSON.stringify(areas)); } catch { /* ignore */ } }
 function loadAreas() {
   try { areas = (JSON.parse(sessionStorage.getItem(STORE_KEY)) || []).filter((a) => a.trees); } catch { areas = []; }
+}
+
+// ---------- car-free street tool ----------
+let btnCarFree;
+
+function startCarFreeTool() {
+  if (document.getElementById('btnTree')?.disabled) return;
+  document.getElementById('btnNav').click();
+  document.querySelectorAll('#ui button').forEach((b) => b.classList.remove('active'));
+  btnCarFree?.classList.add('active');
+  ensureGeo();
+  map.doubleClickZoom.disable();
+  map.getCanvas().style.cursor = 'crosshair';
+  tool = 'carfree';
+  drawing = [];
+  hover = null;
+  clearPreview();
+  say('🚲 <b>Car-free street</b>: hover a car road and click to turn it into a green pedestrian/bike street with trees along both edges.');
+  drawCarFreeState();
+}
+
+function drawCarFreeState() {
+  const items = window.__app?.carFreeLines || [];
+  const features = [];
+  for (const item of items) {
+    for (const coords of (item.lines || [])) {
+      features.push({
+        type: 'Feature',
+        properties: { name: item.name, lengthM: item.lengthM },
+        geometry: { type: 'LineString', coordinates: coords }
+      });
+    }
+  }
+  map.getSource('carfree-lines')?.setData({ type: 'FeatureCollection', features });
+}
+
+function applyCarFreeStreet(rd) {
+  if (!window.__app.carFreeLines) window.__app.carFreeLines = [];
+  const spots = computeStreetTreeSpots(rd.matched);
+  const plantedTrees = [];
+  for (const p of spots) {
+    const [lng, lat] = toLL(p);
+    const obj = app.addObject('tree', lng, lat);
+    plantedTrees.push({ obj, lng, lat });
+  }
+  growIn(plantedTrees.map((t) => t.obj));
+
+  const carFreeItem = {
+    id: 'cf_' + Date.now() + '_' + Math.floor(Math.random() * 1000),
+    name: rd.name || 'Car-free street',
+    lengthM: rd.totalLen,
+    lines: rd.matched.map((r) => r.coords),
+    trees: plantedTrees.map((t) => [t.lng, t.lat])
+  };
+  window.__app.carFreeLines.push(carFreeItem);
+
+  if (!window.__app.history) window.__app.history = [];
+  window.__app.history.push({
+    kind: 'carfree',
+    item: carFreeItem,
+    trees: plantedTrees
+  });
+
+  drawCarFreeState();
+  clearPreview();
+  map.getSource('carfree-hover')?.setData(EMPTY);
+  app.updateCount();
+  app.saveSession();
+
+  floatText(rd.primary.m[0], `🚲 ${rd.name || 'Street'} car-free · +${plantedTrees.length} trees · ${rd.totalLen} m`);
+  say(`🚲 <b>Car-free street</b>: ${rd.name || 'Street'} (${rd.totalLen} m, ${plantedTrees.length} trees planted). ` +
+    '<button id="pl-undo-carfree">Undo</button><button id="pl-done">Done</button>');
+  document.getElementById('pl-undo-carfree').onclick = () => undoCarFree(carFreeItem);
+  document.getElementById('pl-done').onclick = () => { stopTool(); say(''); };
+}
+
+function undoCarFree(targetItem) {
+  const list = window.__app?.carFreeLines;
+  if (!list || !list.length) return;
+  const item = targetItem || list.pop();
+  if (targetItem) {
+    const idx = list.indexOf(targetItem);
+    if (idx >= 0) list.splice(idx, 1);
+  }
+  if (item && item.trees) {
+    for (const pt of item.trees) {
+      const idx = app.placed.findIndex((p) => p.type === 'tree' && distM(toM([p.lng, p.lat]), toM(pt)) < 2);
+      if (idx >= 0) {
+        app.scene.remove(app.placed[idx].obj);
+        app.placed.splice(idx, 1);
+      }
+    }
+  }
+  drawCarFreeState();
+  clearPreview();
+  map.getSource('carfree-hover')?.setData(EMPTY);
+  app.updateCount();
+  app.saveSession();
+  if (tool === 'carfree') {
+    say('🚲 <b>Car-free street</b>: hover a car road and click to turn it into a green pedestrian/bike street with trees.');
+  } else {
+    say(list.length ? '<button id="pl-undo-carfree">Undo previous car-free street</button>' : '');
+    document.getElementById('pl-undo-carfree')?.addEventListener('click', () => undoCarFree());
+  }
 }
 
 // ---------- tree brush: hold the mouse down and paint trees ----------
@@ -861,6 +1071,31 @@ function onMove(ev) {
     return setTip(brush.painting ? `+${trees(brush.stroke.length)}` : 'Hold the mouse down to paint trees', true, ev.point);
   }
   if (tool && !pending) {
+    if (tool === 'carfree') {
+      ensureGeo();
+      const rd = roadAt(cursorM);
+      if (!rd) {
+        clearPreview();
+        map.getSource('carfree-hover')?.setData(EMPTY);
+        return setTip('✗ Hover a car road to convert', false, ev.point);
+      }
+      const already = (window.__app?.carFreeLines || []).some((cf) =>
+        cf.name && rd.name ? cf.name === rd.name : cf.lines?.some((ln) => distM(ln[0], rd.primary.coords[0]) < 10)
+      );
+      if (already) {
+        clearPreview();
+        map.getSource('carfree-hover')?.setData(EMPTY);
+        return setTip(`✓ Already car-free: ${rd.name || 'street'}`, true, ev.point);
+      }
+      const features = rd.matched.map((r) => ({
+        type: 'Feature',
+        geometry: { type: 'LineString', coordinates: r.coords }
+      }));
+      map.getSource('carfree-hover')?.setData({ type: 'FeatureCollection', features });
+      const spots = computeStreetTreeSpots(rd.matched);
+      showPreview({ spots, houses: [] }, `cf_${rd.name || ''}_${rd.totalLen}`);
+      return setTip(`🚲 Make ${rd.name || 'street'} car-free (${rd.totalLen} m) · click to convert`, true, ev.point);
+    }
     ensureGeo();
     if (tool === 'draw' || ev.originalEvent?.shiftKey) {
       if (tool === 'wand') { hover = null; clearPreview(); }
@@ -892,6 +1127,20 @@ function onMove(ev) {
 function onClick(e) {
   if (!tool || pending) return;
   const p = toM([e.lngLat.lng, e.lngLat.lat]);
+  if (tool === 'carfree') {
+    ensureGeo();
+    const rd = roadAt(p);
+    if (!rd) return;
+    const already = (window.__app?.carFreeLines || []).some((cf) =>
+      cf.name && rd.name ? cf.name === rd.name : cf.lines?.some((ln) => distM(ln[0], rd.primary.coords[0]) < 10)
+    );
+    if (already) {
+      say(`🚲 <b>Car-free street</b>: ${rd.name || 'street'} is already car-free.`);
+      return;
+    }
+    applyCarFreeStreet(rd);
+    return;
+  }
   if (tool === 'wand' && e.originalEvent?.shiftKey) { setMode('draw'); }
   if (tool === 'draw') {
     if (drawing.length >= 3 && distM(p, drawing[0]) < 6) return finishDrawing();
@@ -944,11 +1193,22 @@ function init() {
     title: 'Turn a square, lawn or block green: buildings inside are demolished and trees planted' });
   brushBtn.after(btn);
   btn.addEventListener('click', () => (tool ? (stopTool(), say('')) : startTool()));
-  // any other tool ends the green area tool / the brush
+
+  btnCarFree = Object.assign(document.createElement('button'), {
+    id: 'btnCarFree',
+    textContent: '🚲 Car-free street',
+    title: 'Convert a car road into a green pedestrian and bike street with street trees along both edges'
+  });
+  const btnBld = document.getElementById('btnBuilding');
+  if (btnBld) btnBld.after(btnCarFree);
+  else document.getElementById('ui')?.appendChild(btnCarFree);
+  btnCarFree.addEventListener('click', () => (tool === 'carfree' ? (stopTool(), say('')) : startCarFreeTool()));
+
+  // any other tool ends the green area tool / the brush / carfree tool
   document.getElementById('ui')?.addEventListener('click', (e) => {
     const b = e.target.closest('button');
     if (!b) return;
-    if (b !== btn && tool) { stopTool(); }
+    if (b !== btn && b !== btnCarFree && tool) { stopTool(); }
     if (b !== brushBtn && brush) { stopBrush(); }
     setTimeout(() => {
       if (placeType() === 'building' && !tool && !brush) {
@@ -990,13 +1250,61 @@ function init() {
     paint: { 'fill-extrusion-color': '#e8e4dc', 'fill-extrusion-height': height, 'fill-extrusion-base': base, 'fill-extrusion-opacity': 0.9 } });
   map.addSource('brush-cursor', { type: 'geojson', data: EMPTY });
   map.addLayer({ id: 'brush-cursor', type: 'line', source: 'brush-cursor', paint: { 'line-color': '#2e7d32', 'line-width': 2.5 } });
+
+  map.addSource('carfree-hover', { type: 'geojson', data: EMPTY });
+  map.addLayer({
+    id: 'carfree-hover',
+    type: 'line',
+    source: 'carfree-hover',
+    paint: {
+      'line-color': '#2e7d32',
+      'line-width': ['interpolate', ['linear'], ['zoom'], 14, 8, 17, 16],
+      'line-opacity': 0.6,
+      'line-dasharray': [2, 1]
+    }
+  }, 'buildings-own');
+
+  map.addSource('carfree-lines', { type: 'geojson', data: EMPTY });
+  map.addLayer({
+    id: 'carfree-lines-casing',
+    type: 'line',
+    source: 'carfree-lines',
+    paint: {
+      'line-color': '#1b5e20',
+      'line-width': ['interpolate', ['linear'], ['zoom'], 14, 10, 17, 20],
+      'line-opacity': 0.85
+    }
+  }, 'buildings-own');
+
+  map.addLayer({
+    id: 'carfree-lines-fill',
+    type: 'line',
+    source: 'carfree-lines',
+    paint: {
+      'line-color': '#4caf50',
+      'line-width': ['interpolate', ['linear'], ['zoom'], 14, 7, 17, 15],
+      'line-opacity': 0.9
+    }
+  }, 'buildings-own');
+
+  map.addLayer({
+    id: 'carfree-lines-center',
+    type: 'line',
+    source: 'carfree-lines',
+    paint: {
+      'line-color': '#e8f5e9',
+      'line-width': 2,
+      'line-dasharray': [3, 2]
+    }
+  }, 'buildings-own');
+
   setupGhosts();
 
   loadAreas();
   // the map geometry changes as tiles load, the view moves or buildings are deleted
   map.on('sourcedata', (e) => { if (e.sourceId === 'openmaptiles' && e.isSourceLoaded) geoDirty = true; });
   map.on('moveend', () => { geoDirty = true; hover = null; });
-  window.addEventListener('scene-changed', () => { geoDirty = true; });
+  window.addEventListener('scene-changed', () => { geoDirty = true; drawCarFreeState(); });
   map.on('idle', () => { if (geoDirty) rebuildGeo(); });
   fetch('trees.json').then((r) => r.json()).then((rows) => {
     const g = new Grid();
@@ -1004,6 +1312,7 @@ function init() {
     geo.trees = g;
   }).catch(() => {});
   drawState();
+  drawCarFreeState();
   if (placeType() === 'building') updateBuildingPill();
 
   // mouse feedback, at most once per frame
@@ -1091,13 +1400,14 @@ function init() {
   // keep the area layers above the climate layer's colour overlay (it may be added after us)
   setInterval(() => {
     const original = document.querySelector('#comparison-card button[aria-pressed="true"]')?.textContent === 'Original';
-    for (const id of ['green-areas-fill', 'green-areas-line', 'green-areas-corners'])
+    for (const id of ['green-areas-fill', 'green-areas-line', 'green-areas-corners', 'carfree-lines-fill', 'carfree-lines-casing', 'carfree-lines-center', 'carfree-hover'])
       if (map.getLayer(id)) map.setLayoutProperty(id, 'visibility', original ? 'none' : 'visible');
     btn.disabled = brushBtn.disabled = !!document.getElementById('btnTree')?.disabled;
+    if (btnCarFree) btnCarFree.disabled = !!document.getElementById('btnTree')?.disabled;
     if (brushBtn.disabled && brush) stopBrush();
     const ids = map.getStyle().layers.map((l) => l.id);
     if (ids.includes('climate-overlay') && ids.indexOf('climate-overlay') > ids.indexOf('green-areas-fill'))
-      for (const id of ['green-areas-fill', 'green-areas-line', 'placement-ghost']) map.moveLayer(id, 'buildings-own');
+      for (const id of ['green-areas-fill', 'green-areas-line', 'placement-ghost', 'carfree-lines-fill', 'carfree-lines-casing', 'carfree-lines-center']) map.moveLayer(id, 'buildings-own');
   }, 250);
 }
 
@@ -1105,6 +1415,27 @@ function init() {
 window.placement = {
   spaceAt: (lngLat) => (ensureGeo(), spaceAt(toM(Array.isArray(lngLat) ? lngLat : [lngLat.lng, lngLat.lat]))), // for testing in the console
   check: (type, pt) => (ensureGeo(), check(type, Array.isArray(pt) ? pt : [pt.lng, pt.lat])),
+  roadAt: (lngLat) => (ensureGeo(), roadAt(toM(Array.isArray(lngLat) ? lngLat : [lngLat.lng, lngLat.lat]))),
+  convertRoadCarFree: (rdOrName) => {
+    ensureGeo();
+    let rd = typeof rdOrName === 'object' && rdOrName !== null ? rdOrName : null;
+    if (!rd && typeof rdOrName === 'string') {
+      for (const r of geo.roads.items) {
+        let name = null;
+        for (const pt of [r.m[Math.floor(r.m.length / 2)], r.m[0], r.m[r.m.length - 1]]) {
+          name = streetName(pt);
+          if (name) break;
+        }
+        if (name && name.toLowerCase().includes(rdOrName.toLowerCase())) {
+          rd = roadAt(r.m[0]);
+          break;
+        }
+      }
+    }
+    if (rd) applyCarFreeStreet(rd);
+    return rd;
+  },
+  undoCarFree,
   allow(type, e) {
     if (!map) return true;
     const pt = [e.lngLat.lng, e.lngLat.lat];

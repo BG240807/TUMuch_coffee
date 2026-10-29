@@ -95,6 +95,7 @@ window.__app = window.__app || {};
 window.__app.buildingSpec = window.__app.buildingSpec || { w: 16, d: 12, floors: 4, rot: 0, roofType: 'standard' };
 const retrofitted = window.__app.retrofitted || {};
 window.__app.retrofitted = retrofitted;
+window.__app.carFreeLines = window.__app.carFreeLines || [];
 
 import { addCadastre } from './cadastre.js';
 let cadastre = null;
@@ -763,6 +764,23 @@ function restoreEntry(h) {
       }
     }
     refreshBuildings();
+  } else if (h.kind === 'carfree') {
+    if (window.placement?.undoCarFree) {
+      window.placement.undoCarFree(h.item);
+    } else {
+      const idx = (window.__app.carFreeLines || []).findIndex(cf => cf.id === h.item?.id);
+      if (idx >= 0) window.__app.carFreeLines.splice(idx, 1);
+      if (h.item?.trees) {
+        for (const pt of h.item.trees) {
+          const k = placed.findIndex(p => p.type === 'tree' && Math.abs(p.lng - pt[0]) < 1e-7 && Math.abs(p.lat - pt[1]) < 1e-7);
+          if (k >= 0) {
+            scene.remove(placed[k].obj);
+            placed.splice(k, 1);
+          }
+        }
+      }
+    }
+    refreshBuildings();
   }
 }
 function restoreLastDeleted() {
@@ -793,7 +811,8 @@ function saveSession() {
         roofType: p.obj.userData?.roofType || 'standard'
       })),
       history,
-      retrofitted
+      retrofitted,
+      carFreeLines: window.__app.carFreeLines || []
     }));
   } catch (err) { console.warn('Could not save session', err); }
 }
@@ -806,6 +825,9 @@ function restoreSession() {
     for (const b of buildings.values()) {
       if (retrofitted[b.key]) b.props.retrofit = retrofitted[b.key];
     }
+  }
+  if (s.carFreeLines) {
+    window.__app.carFreeLines = s.carFreeLines;
   }
   (s.placed || []).forEach(p => addObject(p.type, p.lng, p.lat, p));
   let h = s.history;
@@ -1029,7 +1051,7 @@ btnTree.onclick = () => setMode('tree', 'btnTree');
 btnBuilding.onclick = () => setMode('building', 'btnBuilding');
 btnNav.onclick = () => setMode('nav', 'btnNav');
 btnUndo.onclick = () => {
-  if (history.length && history[history.length - 1].kind === 'retrofit') {
+  if (history.length && (history[history.length - 1].kind === 'retrofit' || history[history.length - 1].kind === 'carfree')) {
     restoreLastDeleted();
     return;
   }
@@ -1055,6 +1077,8 @@ window.__app = {
   scene,
   placed,
   deleted,
+  history,
+  carFreeLines: window.__app?.carFreeLines || [],
   get selected() { return selected; },
   set selected(v) { selected = v; refreshSelection(); },
   retrofitted,

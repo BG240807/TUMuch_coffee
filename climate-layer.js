@@ -211,7 +211,9 @@ function buildUser() {
     nParks: 0,
     totalBuildArea: 0,
     greenRoofArea: 0,
-    solarRoofArea: 0
+    solarRoofArea: 0,
+    carFree: new Float32Array(M),
+    carFreeM: 0
   };
   for (const p of app.placed) {
     const k = idx(p.lng, p.lat);
@@ -278,6 +280,27 @@ function buildUser() {
   if (app.deleted && app.deleted.length) {
     for (const e of S.bList) if (app.isDeleted(e.b)) { U.removed[e.k] += e.a; U.nRemoved++; }
   }
+
+  // Car-free pedestrian/bike streets
+  const carFreeLines = window.__app?.carFreeLines || [];
+  for (const cf of carFreeLines) {
+    U.carFreeM += cf.lengthM || 0;
+    const lines = cf.lines || (cf.coordinates ? [cf.coordinates] : []);
+    for (const seg of lines) {
+      const pts = Array.isArray(seg) ? seg : (seg.a && seg.b ? [seg.a, seg.b] : []);
+      for (let i = 0; i < pts.length - 1; i++) {
+        const a = pts[i], b = pts[i + 1];
+        const len = Math.hypot((b[0] - a[0]) * g.mLng, (b[1] - a[1]) * MLAT);
+        const steps = Math.max(1, Math.ceil(len / 12));
+        for (let s = 0; s <= steps; s++) {
+          const t = s / steps;
+          const k = idx(a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t);
+          if (k >= 0) U.carFree[k] = 1.0;
+        }
+      }
+    }
+  }
+  U.carFreeB = blur(U.carFree, 1, 2);
 }
 
 /* ---------------- the model ---------------- */
@@ -298,6 +321,7 @@ function field(sc, withUser) {
   const sealedB = blur(sealed, 1, 2), canopyB = blur(canopy, 1, 2);
   const uVegB = withUser ? blur(userVeg, 2, 2) : userVeg;
   const uBuiltB = withUser ? blur(userBuilt, 2, 2) : userBuilt;
+  const uCarFreeB = withUser ? U.carFreeB : new Float32Array(M);
 
   const T = new Float32Array(M), PET = new Float32Array(M), PM = new Float32Array(M), RH = new Float32Array(M), Runoff = new Float32Array(M);
 
@@ -308,17 +332,20 @@ function field(sc, withUser) {
 
   for (let k = 0; k < M; k++) {
     const baseVeg = clamp(canopyB[k] + 0.5 * S.greenB[k], 0, 1);
+    const cf = clamp(uCarFreeB[k], 0, 1);
 
     // --- 1. Ambient Air Temp (Ta) ---
     // Single tree: cools local cell by -0.2 to -0.6 °C with log diminishing returns (Math.log1p)
     // +10% canopy cools neighborhood by -0.8 °C, capped at -1.5 °C for +30% canopy
     // Added concrete buildings warm local Ta up to +1.8 °C
+    // Car-free pedestrian street eliminates asphalt heat buildup (-1.2 °C)
     // Thermal floor: cannot cool below rural background (sc.T)
     const baseTreeCool = -0.983 * Math.log1p(baseVeg * 12.0);
     const userTreeCool = withUser ? -Math.min(1.5, 0.983 * Math.log1p(uVegB[k] * 12.0)) : 0;
     const userBuildWarm = withUser ? Math.min(1.8, 1.8 * uBuiltB[k]) : 0;
+    const userRoadCool = withUser ? -1.2 * cf : 0;
 
-    const rawT = sc.T + 4.2 * sealedB[k] + baseTreeCool + userTreeCool + userBuildWarm
+    const rawT = sc.T + 4.2 * sealedB[k] + baseTreeCool + userTreeCool + userBuildWarm + userRoadCool
       - 1.8 * S.waterB[k] - 0.0065 * (S.elev[k] - S.meanElev);
 
     T[k] = Math.max(sc.T - Math.max(0, 0.0065 * (S.elev[k] - S.meanElev)), rawT);
@@ -326,6 +353,7 @@ function field(sc, withUser) {
     // --- 2. Perceived Temperature (PET / Shade Comfort) ---
     // Trees/parks reduce local PET by -4.0 to -11.0 °C (dense shade + evapotranspiration)
     // Unshaded concrete/added buildings raise PET by +3.5 to +6.0 °C
+    // Pedestrianization & street shading adds -2.5 °C PET comfort
     const solarGain = Math.max(0, (sc.T - 8) * 0.28) * (1 + 1.2 * sealedB[k]);
     const baseShade = -(4.0 * Math.min(1.0, baseVeg * 2.0) + 7.0 * (baseVeg * baseVeg));
 
@@ -335,22 +363,25 @@ function field(sc, withUser) {
       const dPetVeg = -(4.0 * clamp(uShade * 2.0, 0, 1) + 7.0 * uShade);
       const uConcrete = clamp(userBuilt[k] * 2.0 + uBuiltB[k], 0, 1);
       const dPetBuilt = +(3.5 * clamp(uConcrete * 1.5, 0, 1) + 2.5 * uConcrete);
-      userPetDelta = dPetVeg + dPetBuilt;
+      userPetDelta = dPetVeg + dPetBuilt - 2.5 * cf;
     }
     PET[k] = T[k] + solarGain + baseShade + userPetDelta;
 
-    // --- 3. Particulate Matter (PM2.5) ---
-    const trafProxy = 0.9 * S.trafB[k] * trafFactor;
-    const vegFilter = clamp(0.4 * baseVeg + 0.45 * uVegB[k], 0, 0.75);
-    PM[k] = Math.max(0.2 * basePm, basePm * (0.75 + trafProxy + 0.35 * sealedB[k] + 0.3 * uBuiltB[k]) * (1 - vegFilter) * rainWashout);
+    // --- 3. Particulate Matter (PM2.5) & Traffic Pollution ---
+    // Car-free street reduces local traffic NO2/pollution by -50% per Brussels study in effects.json
+    const localTrafFactor = 1.0 - 0.50 * cf;
+    const trafProxy = 0.9 * S.trafB[k] * trafFactor * localTrafFactor;
+    const vegFilter = clamp(0.4 * baseVeg + 0.45 * uVegB[k] + 0.20 * cf, 0, 0.75);
+    PM[k] = Math.max(0.2 * basePm, basePm * (0.75 + trafProxy + 0.35 * sealedB[k] + 0.3 * uBuiltB[k]) * (1 - vegFilter) * rainWashout * (1 - 0.15 * cf));
 
     // --- 4. Relative Humidity (RH) ---
-    RH[k] = clamp(sc.rh - 2.0 * (T[k] - sc.T) + 6.0 * baseVeg + 5.0 * uVegB[k] + 8.0 * S.waterB[k], 15, 100);
+    RH[k] = clamp(sc.rh - 2.0 * (T[k] - sc.T) + 6.0 * baseVeg + 5.0 * uVegB[k] + 8.0 * S.waterB[k] + 2.0 * cf, 15, 100);
 
     // --- 5. Stormwater Runoff Coefficient ---
     const cBase = clamp(0.95 * sealedB[k] + 0.20 * baseVeg + 0.50 * (1 - sealedB[k] - baseVeg), 0.15, 0.95);
     const dRunoffGreen = -0.30 * clamp(U.greenRoof[k] / area, 0, 1);
-    Runoff[k] = withUser ? clamp(cBase - 0.42 * uVegB[k] + 0.48 * uBuiltB[k] + dRunoffGreen, 0.15, 0.95) : cBase;
+    const dRunoffCarFree = -0.15 * cf;
+    Runoff[k] = withUser ? clamp(cBase - 0.42 * uVegB[k] + 0.48 * uBuiltB[k] + dRunoffGreen + dRunoffCarFree, 0.15, 0.95) : cBase;
   }
 
   return { T, PET, PM, RH, Runoff };
@@ -488,7 +519,7 @@ function updateEdits() {
   const co2SavedKgYr = Math.round(solarCo2SavedKgYr + treeCo2SavedKgYr);
 
   const counts = { tree: U.nTrees, park: U.nParks, building: U.nBuild };
-  const hasInterventions = (U.nTrees > 0 || U.nBuild > 0 || U.nRemoved > 0 || U.nParks > 0 || U.greenRoofArea > 0 || U.solarRoofArea > 0);
+  const hasInterventions = (U.nTrees > 0 || U.nBuild > 0 || U.nRemoved > 0 || U.nParks > 0 || U.greenRoofArea > 0 || U.solarRoofArea > 0 || (U.carFreeM || 0) > 0);
   const active = !showOriginal && (hasInterventions || n > 0);
 
   const avgT = n ? dT / n : 0;
@@ -510,6 +541,7 @@ function updateEdits() {
       solarRoofM2: Math.round(U.solarRoofArea),
       solarKwhYr,
       co2SavedKgYr,
+      carFreeLengthM: Math.round(U.carFreeM || 0),
       counts,
       areaM2: Math.round(n * CELL * CELL),
       nTrees: U.nTrees,
@@ -524,7 +556,8 @@ function updateEdits() {
   if (U.greenRoofArea > 0) roofParts.push(`+${Math.round(U.greenRoofArea)} m² green roof`);
   if (U.solarRoofArea > 0) roofParts.push(`+${Math.round(U.solarRoofArea)} m² solar`);
   const roofText = roofParts.length ? `, ${roofParts.join(', ')}` : '';
-  const head = `<div><b>Your edits</b><span>+${U.nTrees} trees${parkText}, +${U.nBuild} bldg, −${U.nRemoved} bldg${roofText}</span></div>`;
+  const carFreeText = (U.carFreeM && U.carFreeM > 0) ? `, +${Math.round(U.carFreeM)} m car-free` : '';
+  const head = `<div><b>Your edits</b><span>+${U.nTrees} trees${parkText}, +${U.nBuild} bldg, −${U.nRemoved} bldg${roofText}${carFreeText}</span></div>`;
 
   if (showOriginal) {
     el.innerHTML = head + '<div style="color:#8a969c">Viewing the original city: edits hidden.</div>';
@@ -547,6 +580,7 @@ function updateEdits() {
     `<div><span>PM2.5</span><b>${fmt(avgPM)} % <small>(peak ${fmt(pPM * 100)})</small></b></div>` +
     `<div><span>Humidity</span><b>${fmt(avgRH)} pts <small>(peak ${fmt(pRH)})</small></b></div>` +
     (solarKwhYr > 0 ? `<div><span>Rooftop solar</span><b>${solarKwhYr.toLocaleString()} kWh/yr</b></div>` : '') +
+    (U.carFreeM > 0 ? `<div><span>Car-free street</span><b>${Math.round(U.carFreeM).toLocaleString()} m</b></div>` : '') +
     (co2Text ? `<div><span>CO₂ avoided</span>${co2Text}</div>` : '');
 }
 
