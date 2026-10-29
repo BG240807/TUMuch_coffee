@@ -1,6 +1,7 @@
 // Floating metrics card: live city values for Heilbronn from Open-Meteo (no API key).
 // Compact: temperature, felt temperature, air quality (European AQI), humidity. Click to expand.
-// Self-contained: only adds its own element, does not touch map clicks or tools.
+// The big temperature, humidity and PM2.5 are LOCAL: city value + the local offset that climate-layer.js
+// computes for the spot at the centre of the map ('climate-local' event).
 // The time slider calls showMonth() / showLive() to switch between a picked month and now.
 const LAT = 49.142, LON = 9.219;
 const REFRESH_MS = 10 * 60 * 1000;
@@ -19,7 +20,7 @@ card.innerHTML = '<div class="mc-head"><span>Heilbronn · now</span><span class=
 document.body.appendChild(card);
 card.addEventListener('click', () => card.classList.toggle('open'));
 
-const fmt = (v, digits = 0) => (v == null ? '–' : Number(v).toFixed(digits));
+const fmt = (v, digits = 0) => (v == null || isNaN(v) ? '–' : Number(v).toFixed(digits));
 
 function formatDelta(v, unit = '', digits = 1) {
   if (v == null || isNaN(v)) return '0' + unit;
@@ -32,18 +33,32 @@ function formatDelta(v, unit = '', digits = 1) {
 }
 
 let currentEdits = null;
+let currentLocal = null;   // { T, dT, PET, PM, RH, area, precip, snowCm, waterCm } for the map centre, or null
 let lastLiveData = null;
 let lastMonthData = null;
 let monthShown = false;
 
-window.addEventListener('climate-edits', (e) => {
-  currentEdits = e.detail;
-  if (monthShown && lastMonthData) {
-    showMonth(lastMonthData);
-  } else if (!monthShown && lastLiveData) {
-    render(lastLiveData);
-  }
-});
+function rerender() {
+  if (monthShown && lastMonthData) showMonth(lastMonthData);
+  else if (!monthShown && lastLiveData) render(lastLiveData);
+}
+window.addEventListener('climate-edits', (e) => { currentEdits = e.detail; rerender(); });
+window.addEventListener('climate-local', (e) => { currentLocal = e.detail; rerender(); });
+
+// Local offset (°C) to add to a city value; 0 when the map centre is outside the model area.
+const localShift = () => (currentLocal ? currentLocal.dT : 0);
+const shifted = (v) => (v == null || isNaN(v) ? null : v + localShift());
+
+function renderLocalHTML(cityTemp) {
+  const L = currentLocal;
+  if (!L) return '';
+  const wx = L.precip === 'snow' ? '❄ Snowing here' : L.precip === 'rain' ? '🌧 Raining here' : '';
+  const ground = L.snowCm >= 1 ? `❄ ${Math.round(L.snowCm)} cm snow on the ground`
+    : L.waterCm >= 1 ? `💧 ${Math.round(L.waterCm)} cm standing water` : '';
+  const extra = [wx, ground].filter(Boolean).join(' · ');
+  return `<div class="mc-local" style="font-size:11px;line-height:1.45;color:#475569;margin:-2px 0 6px">
+    📍 <b style="color:#1f2a30">${L.area}</b> · city ${fmt(cityTemp, 1)}°${extra ? '<br>' + extra : ''}</div>`;
+}
 
 function renderImpactHTML() {
   if (!currentEdits || !currentEdits.active) return '';
@@ -120,6 +135,16 @@ function renderExtraImpactDetailsHTML() {
   return rows.join('');
 }
 
+// Snow / standing water level at the map centre (only shown when there is some)
+function renderGroundRowsHTML() {
+  const L = currentLocal;
+  if (!L) return '';
+  const rows = [];
+  if (L.snowCm >= 1) rows.push(`<div class="mc-row"><span>Snow cover here</span><b>${fmt(L.snowCm, 0)} cm</b></div>`);
+  if (L.waterCm >= 1) rows.push(`<div class="mc-row"><span>Standing water here</span><b>${fmt(L.waterCm, 0)} cm</b></div>`);
+  return rows.join('');
+}
+
 async function load() {
   const q = `latitude=${LAT}&longitude=${LON}&timezone=Europe%2FBerlin`;
   const [w, a] = await Promise.all([
@@ -129,26 +154,31 @@ async function load() {
   return { w: w.current, a: a.current };
 }
 
+const LOCAL_NOTE = 'Temperature, humidity and PM2.5 are for the spot at the centre of the map: city values from Open-Meteo adjusted by a land-use model (illustrative).';
+
 function render({ w, a }) {
   lastLiveData = { w, a };
+  const L = currentLocal;
   const band = a.european_aqi == null ? null : aqiBand(a.european_aqi);
   const time = new Date(w.time).toLocaleTimeString('de-DE', { hour: '2-digit', minute: '2-digit' });
   card.innerHTML = `
     <div class="mc-head"><span>Heilbronn · ${time}</span><span class="mc-chev">▾</span></div>
-    <div class="mc-temp">${fmt(w.temperature_2m, 1)}°<small>feels ${fmt(w.apparent_temperature, 0)}°</small></div>
+    <div class="mc-temp">${fmt(shifted(w.temperature_2m), 1)}°<small>feels ${fmt(shifted(w.apparent_temperature), 0)}°</small></div>
+    ${renderLocalHTML(w.temperature_2m)}
     ${renderImpactHTML()}
     <div class="mc-row"><span>Air quality</span><b>${band ? `<span class="mc-dot" style="background:${band[2]}"></span>${band[1]} (${fmt(a.european_aqi)})` : '–'}</b></div>
-    <div class="mc-row"><span>Humidity</span><b>${fmt(w.relative_humidity_2m)} %</b></div>
+    <div class="mc-row"><span>Humidity</span><b>${fmt(L ? L.RH : w.relative_humidity_2m)} %</b></div>
     <div class="mc-more">
-      <div class="mc-row"><span>PM2.5</span><b>${fmt(a.pm2_5, 1)} µg/m³</b></div>
+      <div class="mc-row"><span>PM2.5</span><b>${fmt(L ? L.PM : a.pm2_5, 1)} µg/m³</b></div>
       <div class="mc-row"><span>PM10</span><b>${fmt(a.pm10, 1)} µg/m³</b></div>
       <div class="mc-row"><span>NO₂</span><b>${fmt(a.nitrogen_dioxide, 0)} µg/m³</b></div>
       <div class="mc-row"><span>Ozone</span><b>${fmt(a.ozone, 0)} µg/m³</b></div>
       <div class="mc-row"><span>Wind</span><b>${fmt(w.wind_speed_10m, 0)} km/h</b></div>
-      <div class="mc-row"><span>Rain</span><b>${fmt(w.precipitation, 1)} mm</b></div>
+      <div class="mc-row"><span>Rain (now)</span><b>${fmt(w.precipitation, 1)} mm</b></div>
+      ${renderGroundRowsHTML()}
       ${renderExtraImpactDetailsHTML()}
       ${renderBenchmarksHTML()}
-      <div class="mc-note">City-wide values from Open-Meteo (model data, not a local sensor).</div>
+      <div class="mc-note">${LOCAL_NOTE} Air quality, PM10, NO₂, ozone and wind are city-wide model data, not a local sensor.</div>
     </div>`;
 }
 
@@ -156,29 +186,32 @@ function render({ w, a }) {
 export function showMonth(m) {
   monthShown = true;
   lastMonthData = m;
+  const L = currentLocal;
   const band = m.aqi == null ? null : aqiBand(m.aqi);
   const badge = m.kind === 'projected' ? '<span class="mc-badge proj">projected</span>' : '<span class="mc-badge meas">measured</span>';
   const air = m.kind === 'projected' ? '<span class="mc-muted">no projection</span>'
     : band ? `<span class="mc-dot" style="background:${band[2]}"></span>${band[1]} (${fmt(m.aqi)})` : '–';
   card.innerHTML = `
     <div class="mc-head"><span>Heilbronn · ${m.label}</span>${badge}</div>
-    <div class="mc-temp">${fmt(m.temp, 1)}°<small>avg · max ${fmt(m.tmax, 0)}°</small></div>
+    <div class="mc-temp">${fmt(shifted(m.temp), 1)}°<small>avg · max ${fmt(shifted(m.tmax), 0)}°</small></div>
+    ${renderLocalHTML(m.temp)}
     ${renderImpactHTML()}
     <div class="mc-row"><span>Air quality</span><b>${air}</b></div>
-    <div class="mc-row"><span>Humidity</span><b>${fmt(m.humidity)} %</b></div>
+    <div class="mc-row"><span>Humidity</span><b>${fmt(L ? L.RH : m.humidity)} %</b></div>
     <div class="mc-more">
       <div class="mc-row"><span>Hot days (≥ 30°)</span><b>${fmt(m.hotDays)}</b></div>
       <div class="mc-row"><span>Tropical nights (≥ 20°)</span><b>${fmt(m.tropicalNights)}</b></div>
       <div class="mc-row"><span>Rain (month)</span><b>${fmt(m.rain, 0)} mm</b></div>
       <div class="mc-row"><span>Heavy-rain days (≥ 20 mm)</span><b>${fmt(m.heavyRainDays)}</b></div>
       <div class="mc-row"><span>Wind (avg)</span><b>${fmt(m.wind, 0)} km/h</b></div>
-      <div class="mc-row"><span>PM2.5${m.kind === 'projected' ? ' (estimate)' : ''}</span><b>${fmt(m.pm2_5, 1)} µg/m³</b></div>
+      <div class="mc-row"><span>PM2.5${m.kind === 'projected' ? ' (estimate)' : ''}</span><b>${fmt(L ? L.PM : m.pm2_5, 1)} µg/m³</b></div>
       <div class="mc-row"><span>PM10${m.kind === 'projected' ? ' (estimate)' : ''}</span><b>${fmt(m.pm10, 1)} µg/m³</b></div>
+      ${renderGroundRowsHTML()}
       ${renderExtraImpactDetailsHTML()}
       ${renderBenchmarksHTML()}
-      <div class="mc-note">${m.kind === 'projected'
-        ? `Average of ${m.models ?? 7} climate models (CMIP6 HighResMIP via Open-Meteo), this month in ${m.years ? m.years.join('–') : '±5 years'}, bias-corrected against measured 2021–2025. A projection, not a forecast. PM estimate: Europe-wide SSP2-4.5 trend (Clayton et al. 2024) applied to Heilbronn's 2023–25 values; no projection for air-quality index, NO₂ or ozone.`
-        : 'Monthly average of measured history (ERA5 reanalysis and CAMS air quality via Open-Meteo).'}</div>
+      <div class="mc-note">${LOCAL_NOTE} ${m.kind === 'projected'
+        ? `Month values: average of ${m.models ?? 7} climate models (CMIP6 HighResMIP via Open-Meteo), this month in ${m.years ? m.years.join('–') : '±5 years'}, bias-corrected against measured 2021–2025. A projection, not a forecast. PM estimate: Europe-wide SSP2-4.5 trend (Clayton et al. 2024) applied to Heilbronn's 2023–25 values; no projection for air-quality index, NO₂ or ozone.`
+        : 'Month values: monthly average of measured history (ERA5 reanalysis and CAMS air quality via Open-Meteo).'}</div>
     </div>`;
 }
 export function showMonthLoading(label) {
