@@ -17,7 +17,7 @@ const SCEN = {
   heat: { T: 34, rh: 35, pm: 14, pm10: 24, no2: 30, precip: 0 },
   snow: { T: -2, rh: 88, pm: 14, pm10: 22, no2: 35, precip: 2.5 },
   rain: { T: 11, rh: 92, pm: 6.3, pm10: 4.5, no2: 18, precip: 8, rainWashout: true },
-  carfree: { T: 12, rh: 65, pm: 6.8, pm10: 7.5, no2: 4.0, precip: 0, carfree: true }
+  carfree: { T: 12, rh: 65, pm: 7.6, pm10: 14.3, no2: 12.5, precip: 0, carfree: true }
 };
 const KEY = { temp: 'T', pet: 'PET', pm: 'PM', rh: 'RH' };
 const STOPS = {
@@ -340,9 +340,9 @@ function field(sc, withUser) {
   const Veg = new Float32Array(M);
 
   const isCarFree = !!sc.carfree;
-  const trafFactor = isCarFree ? 0.16 : 1.0;
-  const basePm = isCarFree ? (sc.pm * 0.85) : sc.pm;
-  const rainWashout = (sc.precip > 0) ? clamp(1 - 0.05 * sc.precip, 0.65, 1.0) : 1.0;
+  const trafFactor = isCarFree ? 0.5 : 1.0;   // NO₂ −50 % on a car-free day (Brussels, effects.json)
+  const basePm = sc.pm;   // car-free day PM is already lowered in SCEN.carfree (−5 %)
+  const rainWashout = (sc.precip > 0) ? clamp(1 - 0.05 * sc.precip, 0.79, 1.0) : 1.0;   // at most −21 % PM2.5 after rain
 
   for (let k = 0; k < M; k++) {
     const baseVeg = clamp(canopyB[k] + 0.5 * S.greenB[k], 0, 1);
@@ -361,7 +361,7 @@ function field(sc, withUser) {
     const userRoadCool = withUser ? -1.2 * cf : 0;
 
     const rawT = sc.T + 4.2 * sealedB[k] + baseTreeCool + userTreeCool + userBuildWarm + userRoadCool
-      - 1.8 * S.waterB[k] - 0.0065 * (S.elev[k] - S.meanElev);
+      - 1.0 * S.waterB[k] - 0.0065 * (S.elev[k] - S.meanElev);
 
     T[k] = Math.max(sc.T - Math.max(0, 0.0065 * (S.elev[k] - S.meanElev)), rawT);
 
@@ -383,11 +383,11 @@ function field(sc, withUser) {
     PET[k] = T[k] + solarGain + baseShade + userPetDelta;
 
     // --- 3. Particulate Matter (PM2.5) & Traffic Pollution ---
-    // Car-free street reduces local traffic NO2/pollution by -50% per Brussels study in effects.json
-    const localTrafFactor = 1.0 - 0.50 * cf;
+    // Car-free street: NO2 falls ~50 % (Brussels), but traffic PM only 0–7 % (German LEZ, Cyrys et al. 2014)
+    const localTrafFactor = 1.0 - 0.07 * cf;
     const trafProxy = 0.9 * S.trafB[k] * trafFactor * localTrafFactor;
-    const vegFilter = clamp(0.4 * baseVeg + 0.45 * uVegB[k] + 0.20 * cf, 0, 0.75);
-    PM[k] = Math.max(0.2 * basePm, basePm * (0.75 + trafProxy + 0.35 * sealedB[k] + 0.3 * uBuiltB[k]) * (1 - vegFilter) * rainWashout * (1 - 0.15 * cf));
+    const vegFilter = clamp(0.06 * baseVeg + 0.06 * uVegB[k], 0, 0.10);   // vegetation removes only a few % of PM
+    PM[k] = Math.max(0.2 * basePm, basePm * (0.75 + trafProxy + 0.35 * sealedB[k] + 0.3 * uBuiltB[k]) * (1 - vegFilter) * rainWashout);
 
     // --- 4. Relative Humidity (RH) ---
     RH[k] = clamp(sc.rh - 2.0 * (T[k] - sc.T) + 6.0 * baseVeg + 5.0 * uVegB[k] + 8.0 * S.waterB[k] + 2.0 * cf, 15, 100);
@@ -395,7 +395,7 @@ function field(sc, withUser) {
     // --- 5. Stormwater Runoff Coefficient ---
     const cBase = clamp(0.95 * sealedB[k] + 0.20 * baseVeg + 0.50 * (1 - sealedB[k] - baseVeg), 0.15, 0.95);
     const dRunoffGreen = -0.30 * clamp(U.greenRoof[k] / area, 0, 1);
-    const dRunoffCarFree = -0.15 * cf;
+    const dRunoffCarFree = 0;   // a car-free street is still asphalt
     Runoff[k] = withUser ? clamp(cBase - 0.42 * uVegB[k] + 0.48 * uBuiltB[k] + dRunoffGreen + dRunoffCarFree, 0.15, 0.95) : cBase;
   }
 
@@ -695,9 +695,9 @@ function updateEdits() {
     dRunoffPct = ((sumScnRunoff - sumBaseRunoff) / sumBaseRunoff) * 100;
   }
 
-  const solarKwhYr = Math.round((U.solarRoofArea || 0) * 175);
-  const solarCo2SavedKgYr = solarKwhYr * 0.36; // German grid factor 0.36 kg CO2/kWh (UBA 2024)
-  const treeCo2SavedKgYr = (U.nTrees || 0) * 25 + (U.nParks || 0) * 1500;
+  const solarKwhYr = Math.round((U.solarRoofArea || 0) * 90);   // 150 kWh/m² panel × 60 % usable roof (effects.json)
+  const solarCo2SavedKgYr = solarKwhYr * 0.363; // German grid factor 0.363 kg CO2/kWh (UBA 2024)
+  const treeCo2SavedKgYr = (U.nTrees || 0) * 25 + (U.nParks || 0) * 1500;   // estimate: ~25 kg per mature tree (rule of thumb)
   const co2SavedKgYr = Math.round(solarCo2SavedKgYr + treeCo2SavedKgYr);
   const co2Pct = (co2SavedKgYr / CO2_REF_KG) * 100;   // share of one person's yearly footprint
 
@@ -768,7 +768,8 @@ function updateEdits() {
     (solarKwhYr > 0 ? `<div><span>Rooftop solar</span><b>${solarKwhYr.toLocaleString()} kWh/yr</b></div>` : '') +
     (U.carFreeM > 0 ? `<div><span>Car-free street</span><b>${Math.round(U.carFreeM).toLocaleString()} m</b></div>` : '') +
     (co2Val ? `<div><span>CO₂ avoided</span><b>${co2Val} <small>(${co2Pct.toFixed(1)} %)</small></b></div>` +
-      `<div style="color:#94a3b8;font-size:10.5px">CO₂ % = share of one person's yearly footprint (≈ ${(CO2_REF_KG / 1000).toFixed(1)} t).</div>` : '');
+      `<div style="color:#94a3b8;font-size:10.5px">CO₂ % = share of one person's yearly footprint (≈ ${(CO2_REF_KG / 1000).toFixed(1)} t).</div>` : '') +
+    `<div style="color:#94a3b8;font-size:10.5px">Estimates: simple model using published effect sizes (see ⓘ).</div>`;
 }
 
 /* ---------------- refresh pipeline ---------------- */
@@ -855,9 +856,9 @@ async function loadLive() {
 
     SCEN.carfree.T = SCEN.live.T;
     SCEN.carfree.rh = SCEN.live.rh;
-    SCEN.carfree.pm = SCEN.live.pm * 0.85; // -15% PM2.5
-    SCEN.carfree.pm10 = (SCEN.live.pm10 || 15) * 0.50; // -50% PM10
-    SCEN.carfree.no2 = (SCEN.live.no2 || 25) * 0.16; // -84% NO2
+    SCEN.carfree.pm = SCEN.live.pm * 0.95; // -5% PM2.5 (German LEZ 0-7%)
+    SCEN.carfree.pm10 = (SCEN.live.pm10 || 15) * 0.95; // -5% PM10 (German LEZ 0-7%)
+    SCEN.carfree.no2 = (SCEN.live.no2 || 25) * 0.50; // -50% NO2 (Brussels car-free day)
 
     const opt = document.querySelector('#cl-scen option[value="live"]');
     if (opt) opt.textContent = `Live now (${SCEN.live.T.toFixed(1)} °C)`;

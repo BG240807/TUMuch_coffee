@@ -136,7 +136,7 @@ function renderExtraImpactDetailsHTML() {
   if (currentEdits.co2SavedKgYr) {
     const val = Number(currentEdits.co2SavedKgYr);
     const t = Math.abs(val) >= 1000 ? `${(val / 1000).toFixed(1)} t` : `${Math.round(val)} kg`;
-    rows.push(`<div class="mc-row mc-impact-detail"><span>CO₂ avoided</span><b>−${t}/yr</b></div>`);
+    rows.push(`<div class="mc-row mc-impact-detail"><span>CO₂ avoided (est.)</span><b>≈ −${t}/yr</b></div>`);
   }
   if (currentEdits.areaM2) {
     rows.push(`<div class="mc-row mc-impact-detail"><span>Intervention footprint</span><b>≈ ${Number(currentEdits.areaM2).toLocaleString()} m²</b></div>`);

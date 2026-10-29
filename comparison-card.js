@@ -107,8 +107,8 @@ export function addComparisonCard({ map, scene, placed, deleted }) {
       }
     }
 
-    const solarKwh = Math.round(solarM2 * 175);
-    const co2Tons = ((solarKwh * 0.36) / 1000).toFixed(1);
+    const solarKwh = Math.round(solarM2 * 90);   // 150 kWh/m² panel × 60 % usable roof
+    const co2Tons = ((solarKwh * 0.363) / 1000).toFixed(1);
 
     let carFreeM = 0;
     if (window.__app?.carFreeLines) {
