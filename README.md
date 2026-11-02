@@ -32,7 +32,7 @@ All features below are implemented in this repository (`index.html`, `cadastre.j
   - Computes a 3.2 km × 3.2 km microclimate grid with smooth radial edge blending from building sealing, Baumkataster + user tree canopy, parks, water bodies, road traffic weights, and terrain altitude, calibrated to empirical German/European urban climate literature:
     - **🌡 Air Temp ($T_a$)**: Logarithmic single-tree cooling (`−0.2 to −0.6 °C`) and neighborhood canopy cooling (`−0.8 °C` per `+10%` canopy, capped at `−1.5 °C` with a rural thermal floor) vs. Canopy UHI warming (`+1.8 °C`) on sealed concrete.
     - **☀️ Feel (PET)**: Physiologically Equivalent Temperature modeling solar shielding and evapotranspiration (`−4 to −11 °C` under shade canopy; `+3.5 to +6.0 °C` over unshaded concrete).
-    - **🏭 Pollution (PM2.5) & 💧 Humidity**: Models vegetation deposition, SuDS stormwater runoff retention (`−30% to −50%` on unsealed green areas vs. `95%` on sealed concrete), heavy-rain washout (`−90%` coarse PM vs. `−21%` PM2.5), and a **Car-free day** scenario (`−84% NO₂`, `−50% PM10`, `−15% PM2.5`).
+    - **🏭 Pollution (PM2.5) & 💧 Humidity**: Models vegetation deposition, SuDS stormwater runoff retention (`−30% to −50%` on unsealed green areas vs. `95%` on sealed concrete), heavy-rain washout (`−90%` coarse PM vs. `−21%` PM2.5), and a **Car-free day** scenario (`−50% NO₂`, `−5% PM10`, `−5% PM2.5`).
 
 ## How to run
 
