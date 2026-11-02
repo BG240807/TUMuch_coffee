@@ -27,8 +27,8 @@ const SCIENTIFIC_SOURCES = [
     desc: 'Landesanstalt für Umwelt Baden-Württemberg official monitoring station Weinsberger Str.: NO₂ 29 µg/m³ · PM10 15 µg/m³ annual baseline.',
   },
   {
-    title: 'AerChemMIP SSP2-4.5 Climate Projections',
-    desc: 'CMIP6 HighResMIP multi-model aerosol-chemistry ensemble (Clayton et al. 2024 via Open-Meteo), bias-corrected against measured 2021–2025 Heilbronn weather data.',
+    title: 'Climate & PM projections to 2050',
+    desc: 'Weather: 7 CMIP6 HighResMIP models via Open-Meteo, bias-corrected against measured 2021–2025 Heilbronn data. PM2.5/PM10: estimate from the Europe-wide SSP2-4.5 trend (Clayton et al. 2024, ACP 24:10717). Effects of edits are estimates from a simple model using published effect sizes.',
   },
 ];
 

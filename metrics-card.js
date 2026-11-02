@@ -121,13 +121,22 @@ function renderBenchmarksHTML() {
 function renderExtraImpactDetailsHTML() {
   if (!currentEdits || !currentEdits.active) return '';
   const rows = [];
+  if (currentEdits.greenRoofM2) {
+    rows.push(`<div class="mc-row mc-impact-detail"><span>Green roof</span><b>+${Math.round(currentEdits.greenRoofM2).toLocaleString()} m²</b></div>`);
+  }
+  if (currentEdits.solarRoofM2) {
+    rows.push(`<div class="mc-row mc-impact-detail"><span>Solar roof</span><b>+${Math.round(currentEdits.solarRoofM2).toLocaleString()} m²</b></div>`);
+  }
   if (currentEdits.solarKwhYr) {
     rows.push(`<div class="mc-row mc-impact-detail"><span>Rooftop solar</span><b>+${Math.round(currentEdits.solarKwhYr).toLocaleString()} kWh/yr</b></div>`);
+  }
+  if (currentEdits.carFreeLengthM) {
+    rows.push(`<div class="mc-row mc-impact-detail"><span>Car-free street</span><b>+${Math.round(currentEdits.carFreeLengthM).toLocaleString()} m</b></div>`);
   }
   if (currentEdits.co2SavedKgYr) {
     const val = Number(currentEdits.co2SavedKgYr);
     const t = Math.abs(val) >= 1000 ? `${(val / 1000).toFixed(1)} t` : `${Math.round(val)} kg`;
-    rows.push(`<div class="mc-row mc-impact-detail"><span>CO₂ avoided</span><b>−${t}/yr</b></div>`);
+    rows.push(`<div class="mc-row mc-impact-detail"><span>CO₂ avoided (est.)</span><b>≈ −${t}/yr</b></div>`);
   }
   if (currentEdits.areaM2) {
     rows.push(`<div class="mc-row mc-impact-detail"><span>Intervention footprint</span><b>≈ ${Number(currentEdits.areaM2).toLocaleString()} m²</b></div>`);

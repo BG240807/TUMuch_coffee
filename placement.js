@@ -11,7 +11,7 @@ import * as THREE from 'three';
 const MLAT = 111320;                       // metres per degree latitude
 const TREE_GAP = 4;                        // m between new trees
 const CADASTRE_GAP = 3;                    // m to an existing (cadastre) tree
-const BUILDING = { w: 16, d: 12, floors: 4, rot: 0 }; // default building spec
+const BUILDING = { w: 16, d: 12, floors: 4, rot: 0, roofType: 'standard' }; // default building spec
 const getBuildingSpec = () => {
   if (!window.__app) window.__app = {};
   if (!window.__app.buildingSpec) window.__app.buildingSpec = { ...BUILDING };
@@ -99,14 +99,14 @@ const bboxOf = (pts, pad = 0) => {
   return [x0 - pad, y0 - pad, x1 + pad, y1 + pad];
 };
 
-let geo = { lines: new Grid(), areas: new Grid(), names: new Grid(), houses: new Grid(), trees: new Grid() };
+let geo = { lines: new Grid(), areas: new Grid(), names: new Grid(), houses: new Grid(), trees: new Grid(), roads: new Grid() };
 let geoDirty = true;
 const lineList = (g) => (g.type === 'LineString' ? [g.coordinates] : g.type === 'MultiLineString' ? g.coordinates : []);
 const polyList = (g) => (g.type === 'Polygon' ? [g.coordinates] : g.type === 'MultiPolygon' ? g.coordinates : []);
 
 function rebuildGeo() {
   if (!map.getSource('openmaptiles') || map.getZoom() < 13) return;
-  const g = { lines: new Grid(), areas: new Grid(), names: new Grid(), houses: new Grid(), trees: geo.trees };
+  const g = { lines: new Grid(), areas: new Grid(), names: new Grid(), houses: new Grid(), trees: geo.trees, roads: new Grid() };
   const src = (sourceLayer) => map.querySourceFeatures('openmaptiles', { sourceLayer });
   const addLine = (coords, half, kind) => {
     const m = coords.map(toM);
@@ -128,7 +128,26 @@ function rebuildGeo() {
     if (p.class === 'service' && p.service === 'parking_aisle') continue;
     const half = ROAD_HALF[p.class] ?? RAIL_HALF[p.class];
     if (!half) continue;
-    for (const line of lineList(f.geometry)) addLine(line, half, RAIL_HALF[p.class] ? 'railway' : 'road');
+    const isCarRoad = !!ROAD_HALF[p.class];
+    for (const line of lineList(f.geometry)) {
+      addLine(line, half, RAIL_HALF[p.class] ? 'railway' : 'road');
+      if (isCarRoad) {
+        const m = line.map(toM);
+        let len = 0;
+        for (let i = 0; i < m.length - 1; i++) len += distM(m[i], m[i + 1]);
+        const roadItem = {
+          m,
+          coords: line,
+          half,
+          class: p.class,
+          lengthM: len,
+          feature: f
+        };
+        for (let i = 0; i < m.length - 1; i++) {
+          g.roads.add(roadItem, bboxOf([m[i], m[i + 1]], half + 8));
+        }
+      }
+    }
   }
   for (const f of src('transportation_name')) {
     if (!f.properties.name) continue;
@@ -174,6 +193,79 @@ function houseAt(p) {
 }
 const placedNear = (p, type, m) => app.placed.some((o) => o.type === type && distM(p, toM([o.lng, o.lat])) < m);
 const cadastreNear = (p, m) => geo.trees.near(bboxOf([p], m)).some((t) => distM(p, t) < m);
+
+function roadAt(p) {
+  ensureGeo();
+  let best = null, bd = Infinity;
+  for (const r of geo.roads.near(bboxOf([p], 25))) {
+    for (let i = 0; i < r.m.length - 1; i++) {
+      const d = segDist(p, r.m[i], r.m[i + 1]);
+      if (d < r.half + 8 && d < bd) {
+        bd = d;
+        best = r;
+      }
+    }
+  }
+  if (!best) return null;
+  let name = null;
+  for (const pt of [best.m[Math.floor(best.m.length / 2)], best.m[0], best.m[best.m.length - 1]]) {
+    name = streetName(pt);
+    if (name) break;
+  }
+  const matched = [best];
+  if (name) {
+    const seen = new Set([best]);
+    for (const r of geo.roads.near(bboxOf([p], 600))) {
+      if (seen.has(r)) continue;
+      let rName = null;
+      for (const pt of [r.m[Math.floor(r.m.length / 2)], r.m[0], r.m[r.m.length - 1]]) {
+        rName = streetName(pt);
+        if (rName) break;
+      }
+      if (rName === name) {
+        seen.add(r);
+        matched.push(r);
+      }
+    }
+  }
+  let totalLen = 0;
+  for (const r of matched) totalLen += r.lengthM;
+  return {
+    primary: best,
+    matched,
+    name,
+    half: best.half,
+    totalLen: Math.round(totalLen)
+  };
+}
+
+function computeStreetTreeSpots(matchedRoads, spacing = 12) {
+  const spots = [];
+  for (const r of matchedRoads) {
+    const m = r.m;
+    const half = Math.max(3, r.half || 6);
+    for (let i = 0; i < m.length - 1; i++) {
+      const a = m[i], b = m[i + 1];
+      const dx = b[0] - a[0], dy = b[1] - a[1];
+      const segLen = Math.hypot(dx, dy);
+      if (segLen < 8) continue;
+      const nx = -dy / segLen, ny = dx / segLen;
+      const numSteps = Math.max(1, Math.floor(segLen / spacing));
+      for (let s = 0.5; s < numSteps; s++) {
+        const cx = a[0] + (s / numSteps) * dx;
+        const cy = a[1] + (s / numSteps) * dy;
+        const leftSpot = [cx + nx * (half + 0.5), cy + ny * (half + 0.5)];
+        const rightSpot = [cx - nx * (half + 0.5), cy - ny * (half + 0.5)];
+        for (const sp of [leftSpot, rightSpot]) {
+          if (areaAt(sp, 'water') || houseAt(sp) || cadastreNear(sp, 3.5)) continue;
+          if (spots.some((existing) => distM(existing, sp) < 6)) continue;
+          spots.push(sp);
+        }
+      }
+    }
+  }
+  return spots;
+}
 
 // ---------- rules for single objects ----------
 // Returns null if allowed, otherwise a short reason. pt is [lng, lat].
@@ -392,30 +484,55 @@ function setTip(text, ok, point) {
 function ghostRing(type, p) {
   if (type === 'tree') return Array.from({ length: 21 }, (_, i) => [p[0] + 3 * Math.cos((i / 20) * 2 * Math.PI), p[1] + 3 * Math.sin((i / 20) * 2 * Math.PI)]);
   const spec = getBuildingSpec();
-  const w = spec.w || 16, d = spec.d || 12, rot = spec.rot || 0;
-  const hw = w / 2, hd = d / 2;
+  const rot = spec.rot || 0;
+  const layout = spec.layout || 'single';
   const rad = (rot * Math.PI) / 180;
   const cos = Math.cos(rad), sin = Math.sin(rad);
-  const corners = [[-hw, -hd], [hw, -hd], [hw, hd], [-hw, hd], [-hw, -hd]];
-  return corners.map(([dx, dy]) => [
+  const rotPt = ([dx, dy]) => [
     p[0] + dx * cos - dy * sin,
     p[1] + dx * sin + dy * cos
-  ]);
+  ];
+
+  if (layout === 'L-wing') {
+    const W = spec.w || 16, D = spec.d || 12;
+    const T = Math.max(5, Math.round(Math.min(W, D) * 0.45));
+    const corners = [
+      [-W / 2, -D / 2],
+      [W / 2, -D / 2],
+      [W / 2, -D / 2 + T],
+      [-W / 2 + T, -D / 2 + T],
+      [-W / 2 + T, D / 2],
+      [-W / 2, D / 2],
+      [-W / 2, -D / 2]
+    ];
+    return corners.map(rotPt);
+  }
+
+  if (layout === 'courtyard' || layout === 'eco-complex') {
+    const W = Math.max(22, spec.w || 16), D = Math.max(18, spec.d || 12);
+    const hw = W / 2, hd = D / 2;
+    const corners = [[-hw, -hd], [hw, -hd], [hw, hd], [-hw, hd], [-hw, -hd]];
+    return corners.map(rotPt);
+  }
+
+  const w = spec.w || 16, d = spec.d || 12;
+  const hw = w / 2, hd = d / 2;
+  const corners = [[-hw, -hd], [hw, -hd], [hw, hd], [-hw, hd], [-hw, -hd]];
+  return corners.map(rotPt);
 }
 // a see-through 3D tree or building at the cursor (same shapes as in index.html), green or red
 let ghost3d = null;
 function makeGhost3d() {
-  const mat = new THREE.MeshLambertMaterial({ color: 0x43a047, transparent: true, opacity: 0.5, depthWrite: false });
+  const wallMat = new THREE.MeshLambertMaterial({ color: 0x43a047, transparent: true, opacity: 0.5, depthWrite: false });
+  const roofMat = new THREE.MeshLambertMaterial({ color: 0xefece6, transparent: true, opacity: 0.8, depthWrite: false });
   const tree = new THREE.Group();
-  tree.add(new THREE.Mesh(new THREE.CylinderGeometry(0.25, 0.4, 4, 6).translate(0, 2, 0), mat),
-    new THREE.Mesh(new THREE.IcosahedronGeometry(3, 1).scale(1, 1.2, 1).translate(0, 6, 0), mat));
+  tree.add(new THREE.Mesh(new THREE.CylinderGeometry(0.25, 0.4, 4, 6).translate(0, 2, 0), wallMat),
+    new THREE.Mesh(new THREE.IcosahedronGeometry(3, 1).scale(1, 1.2, 1).translate(0, 6, 0), wallMat));
   tree.scale.setScalar(1.2);
-  const bGeom = new THREE.BoxGeometry(1, 1, 1);
-  bGeom.translate(0, 0.5, 0);
-  const building = new THREE.Mesh(bGeom, mat);
+  const building = new THREE.Group();
   tree.visible = building.visible = false;
   app.scene.add(tree, building);
-  return { tree, building, mat };
+  return { tree, building, mat: wallMat, roofMat };
 }
 function showGhost(type, pt, reason, point) {
   map.getSource('placement-ghost').setData({ type: 'Feature', properties: { ok: !reason },
@@ -424,10 +541,61 @@ function showGhost(type, pt, reason, point) {
   const obj = ghost3d[type], other = ghost3d[type === 'tree' ? 'building' : 'tree'];
   if (type === 'building') {
     const spec = getBuildingSpec();
-    const w = spec.w || 16, d = spec.d || 12, floors = spec.floors || 4, rot = spec.rot || 0;
+    const floors = spec.floors || 4, rot = spec.rot || 0;
+    const layout = spec.layout || 'single';
+    const roofType = layout === 'eco-complex' ? 'green' : (spec.roofType || 'standard');
     const h = floors * 3.2;
-    obj.scale.set(w, h, d);
+    const wallMat = ghost3d.mat, roofMat = ghost3d.roofMat;
+    const bMats = [wallMat, wallMat, roofMat, wallMat, wallMat, wallMat];
+
+    while (obj.children.length) obj.remove(obj.children[0]);
+
+    if (layout === 'L-wing') {
+      const W = spec.w || 16, D = spec.d || 12;
+      const T = Math.max(5, Math.round(Math.min(W, D) * 0.45));
+      const m1 = new THREE.Mesh(new THREE.BoxGeometry(W, h, T), bMats);
+      m1.position.set(0, h / 2, -D / 2 + T / 2);
+      const D2 = D - T;
+      const m2 = new THREE.Mesh(new THREE.BoxGeometry(T, h, D2), bMats);
+      m2.position.set(-W / 2 + T / 2, h / 2, T / 2);
+      obj.add(m1, m2);
+    } else if (layout === 'courtyard' || layout === 'eco-complex') {
+      const W = Math.max(22, spec.w || 16), D = Math.max(18, spec.d || 12);
+      const T = Math.max(5, Math.round(Math.min(W, D) * 0.28));
+      const D_side = D - 2 * T;
+      const mN = new THREE.Mesh(new THREE.BoxGeometry(W, h, T), bMats);
+      mN.position.set(0, h / 2, -D / 2 + T / 2);
+      const mS = new THREE.Mesh(new THREE.BoxGeometry(W, h, T), bMats);
+      mS.position.set(0, h / 2, D / 2 - T / 2);
+      const mW = new THREE.Mesh(new THREE.BoxGeometry(T, h, D_side), bMats);
+      mW.position.set(-W / 2 + T / 2, h / 2, 0);
+      const mE = new THREE.Mesh(new THREE.BoxGeometry(T, h, D_side), bMats);
+      mE.position.set(W / 2 - T / 2, h / 2, 0);
+      obj.add(mN, mS, mW, mE);
+
+      if (layout === 'eco-complex') {
+        const trunkGeom = new THREE.CylinderGeometry(0.2, 0.3, 3, 6);
+        trunkGeom.translate(0, 1.5, 0);
+        const folGeom = new THREE.IcosahedronGeometry(2.2, 1);
+        folGeom.translate(0, 4.5, 0);
+        const t1 = new THREE.Group();
+        t1.add(new THREE.Mesh(trunkGeom, wallMat), new THREE.Mesh(folGeom, wallMat));
+        t1.position.set(-Math.round((W - 2 * T) * 0.25), 0, 0);
+        const t2 = new THREE.Group();
+        t2.add(new THREE.Mesh(trunkGeom, wallMat), new THREE.Mesh(folGeom, wallMat));
+        t2.position.set(Math.round((W - 2 * T) * 0.25), 0, 0);
+        obj.add(t1, t2);
+      }
+    } else {
+      const w = spec.w || 16, d = spec.d || 12;
+      const m = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), bMats);
+      m.position.set(0, h / 2, 0);
+      obj.add(m);
+    }
+
     obj.rotation.y = (rot * Math.PI) / 180;
+    const roofColor = roofType === 'green' ? 0x2e7d32 : roofType === 'solar' ? 0x1565c0 : 0xefece6;
+    ghost3d.roofMat.color.set(reason ? 0xe53935 : roofColor);
   }
   obj.position.copy(app.toScene(pt[0], pt[1], app.groundAt(pt[0], pt[1])));
   obj.visible = true;
@@ -445,22 +613,75 @@ function hideGhost() {
 }
 const activeTool = () => document.querySelector('#ui button.active')?.id;
 const placeType = () => ({ btnTree: 'tree', btnBuilding: 'building' })[activeTool()];
-function say(html) { info.innerHTML = html; info.style.display = html ? 'block' : 'none'; }
+function syncLayout() {
+  const apply = () => {
+    const ui = document.getElementById('ui');
+    if (ui && info) info.style.top = `${ui.offsetTop + ui.offsetHeight + 8}px`;
+    const cc = document.getElementById('comparison-card');
+    if (cc && ui) {
+      const baseTop = ui.offsetTop + ui.offsetHeight + 10;
+      if (info && info.style.display !== 'none' && window.innerWidth < 1100) {
+        cc.style.top = `${info.offsetTop + info.offsetHeight + 8}px`;
+      } else {
+        cc.style.top = `${baseTop}px`;
+      }
+    }
+  };
+  apply();
+  requestAnimationFrame(apply);
+}
+function say(html) { info.innerHTML = html; info.style.display = html ? 'flex' : 'none'; syncLayout(); }
 
 // ---------- Building interactive controls pill & live adjustment ----------
 let lastCursorLL = null;
 let lastCursorPoint = null;
 
+const LAYOUTS = ['single', 'L-wing', 'courtyard', 'eco-complex'];
+function cycleBuildingLayout() {
+  const spec = getBuildingSpec();
+  const current = spec.layout || 'single';
+  const idx = LAYOUTS.indexOf(current);
+  const next = LAYOUTS[(idx + 1) % LAYOUTS.length];
+  spec.layout = next;
+  if (next === 'eco-complex') spec.roofType = 'green';
+  if (window.__app) window.__app.buildingSpec = spec;
+  updateBuildingPill();
+  refreshGhostBuilding();
+}
+
+function cycleRoofType() {
+  const spec = getBuildingSpec();
+  const next = spec.roofType === 'standard' ? 'green' : spec.roofType === 'green' ? 'solar' : 'standard';
+  spec.roofType = next;
+  if (window.__app) window.__app.buildingSpec = spec;
+  updateBuildingPill();
+  refreshGhostBuilding();
+}
+
 function updateBuildingPill() {
   if (placeType() !== 'building' || tool || brush) return;
   const spec = getBuildingSpec();
-  const html = `🏢 <b>${spec.w}×${spec.d} m · ${spec.floors} fl · ${spec.rot}°</b> ` +
-    `<button id="bld-rot" title="Rotate 15° (shortcut: R or [ / ])">↻ Rotate (R)</button> ` +
-    `<span style="margin-left:3px;font-size:11px;color:#64748b">W</span><button id="bld-w-dec" title="Narrower">−</button><button id="bld-w-inc" title="Wider">+</button> ` +
-    `<span style="margin-left:3px;font-size:11px;color:#64748b">D</span><button id="bld-d-dec" title="Shorter">−</button><button id="bld-d-inc" title="Deeper">+</button> ` +
-    `<span style="margin-left:3px;font-size:11px;color:#64748b">Floors</span><button id="bld-fl-dec" title="Fewer floors (−)">−</button><button id="bld-fl-inc" title="More floors (+)">+</button>`;
+  const layout = spec.layout || 'single';
+  const layoutLabels = {
+    'single': '🏛️ Single (C)',
+    'L-wing': '🏢 L-wing (C)',
+    'courtyard': '🏬 Courtyard (C)',
+    'eco-complex': '🌿 Eco-complex (C)'
+  };
+  const layoutBadge = layoutLabels[layout] || '🏛️ Single (C)';
+  const roof = spec.roofType || 'standard';
+  const roofBadge = roof === 'green' ? '🌱 Green roof' : roof === 'solar' ? '☀️ Solar roof' : '🏢 Standard roof';
+  const html = `<span class="pl-grp">🏢 <b><span class="pl-num pl-num-dim">${spec.w}</span>×<span class="pl-num pl-num-dim">${spec.d}</span> m · <span class="pl-num pl-num-fl">${spec.floors}</span> fl · <span class="pl-num pl-num-rot">${spec.rot}°</span></b></span>` +
+    `<button id="bld-layout" title="Cycle layout (single → L-wing → courtyard → eco-complex, shortcut: C)">${layoutBadge}</button>` +
+    `<button id="bld-roof" title="Cycle roof type (standard → green → solar, shortcut: G)">${roofBadge} (G)</button>` +
+    `<button id="bld-rot" title="Rotate 15° (shortcut: R or [ / ])">↻ Rotate (R)</button>` +
+    `<span class="pl-grp"><span class="pl-lbl">W</span><button id="bld-w-dec" title="Narrower">−</button><button id="bld-w-inc" title="Wider">+</button></span>` +
+    `<span class="pl-grp"><span class="pl-lbl">D</span><button id="bld-d-dec" title="Shorter">−</button><button id="bld-d-inc" title="Deeper">+</button></span>` +
+    `<span class="pl-grp"><span class="pl-lbl">Floors</span><button id="bld-fl-dec" title="Fewer floors (−)">−</button><button id="bld-fl-inc" title="More floors (+)">+</button></span>`;
   say(html);
 
+  document.getElementById('bld-layout')?.addEventListener('click', cycleBuildingLayout);
+  document.getElementById('bld-roof')?.addEventListener('click', cycleRoofType);
   document.getElementById('bld-rot')?.addEventListener('click', () => adjustBuilding({ rot: 15 }));
   document.getElementById('bld-w-dec')?.addEventListener('click', () => adjustBuilding({ dw: -2 }));
   document.getElementById('bld-w-inc')?.addEventListener('click', () => adjustBuilding({ dw: 2 }));
@@ -468,6 +689,29 @@ function updateBuildingPill() {
   document.getElementById('bld-d-inc')?.addEventListener('click', () => adjustBuilding({ dd: 2 }));
   document.getElementById('bld-fl-dec')?.addEventListener('click', () => adjustBuilding({ dfl: -1 }));
   document.getElementById('bld-fl-inc')?.addEventListener('click', () => adjustBuilding({ dfl: 1 }));
+}
+
+function updateSelectionPill(sel) {
+  if (tool || brush) return;
+  const isSelectMode = activeTool() === 'btnSelect' || document.getElementById('btnSelect')?.classList.contains('active');
+  if (!isSelectMode) return;
+
+  const bs = !sel ? [] : Array.isArray(sel) ? sel : sel.buildings ? sel.buildings : (sel.feature || sel.poly) ? [sel] : [];
+  const plBuildings = sel?.placed ? sel.placed.filter(p => p.type === 'building') : [];
+  const count = bs.length + plBuildings.length;
+
+  if (count > 0) {
+    const label = count === 1 ? '1 building' : `${count} buildings`;
+    say(`🏢 <b>${label}</b> ` +
+      `<button id="sel-green" title="Add green roof">🌱 Green roof</button> ` +
+      `<button id="sel-solar" title="Add solar roof">☀️ Solar roof</button> ` +
+      `<button id="sel-demolish" title="Demolish selected (Del)">🗑 Demolish</button>`);
+    document.getElementById('sel-green')?.addEventListener('click', () => window.__app?.retrofitSelected?.('green'));
+    document.getElementById('sel-solar')?.addEventListener('click', () => window.__app?.retrofitSelected?.('solar'));
+    document.getElementById('sel-demolish')?.addEventListener('click', () => window.__app?.deleteSelected?.());
+  } else {
+    say('');
+  }
 }
 
 function adjustBuilding({ rot = 0, dw = 0, dd = 0, dfl = 0 }) {
@@ -549,13 +793,16 @@ function stopTool() {
   hover = null;
   pending = null;
   clearPreview();
+  map.getSource('carfree-hover')?.setData(EMPTY);
   map.doubleClickZoom.enable();
   map.getCanvas().style.cursor = '';
   btn.classList.remove('active');
+  btnCarFree?.classList.remove('active');
   setTip(null);
   // always leave a normal tool active (the scenario comparison restores "the previous tool")
   if (!document.querySelector('#ui button.active')) document.getElementById('btnNav').click();
   drawState();
+  drawCarFreeState();
   if (placeType() === 'building') updateBuildingPill(); else say('');
 }
 // ask before changing anything; offers keeping the buildings when there are any
@@ -624,8 +871,19 @@ function sinkOut(features) {
     if (t < 1) requestAnimationFrame(frame); else src.setData(EMPTY);
   })(t0);
 }
-function floatText(ringM, text) {
-  const p = map.project(toLL(ringM.length > 2 ? centroid(ringM) : ringM[0]));
+function floatText(targetM, text) {
+  if (!map || !targetM) return;
+  let pt;
+  if (Array.isArray(targetM) && typeof targetM[0] === 'number') {
+    pt = targetM;
+  } else if (Array.isArray(targetM) && targetM.length > 2 && Array.isArray(targetM[0])) {
+    pt = centroid(targetM);
+  } else if (Array.isArray(targetM) && targetM.length > 0 && Array.isArray(targetM[0])) {
+    pt = targetM[0];
+  } else {
+    return;
+  }
+  const p = map.project(toLL(pt));
   const el = Object.assign(document.createElement('div'), { className: 'pl-float', textContent: text });
   el.style.left = `${p.x}px`;
   el.style.top = `${p.y}px`;
@@ -709,6 +967,117 @@ function undoArea() {
 function saveAreas() { try { sessionStorage.setItem(STORE_KEY, JSON.stringify(areas)); } catch { /* ignore */ } }
 function loadAreas() {
   try { areas = (JSON.parse(sessionStorage.getItem(STORE_KEY)) || []).filter((a) => a.trees); } catch { areas = []; }
+}
+function resetAreas() {
+  areas = [];
+  try { sessionStorage.removeItem(STORE_KEY); } catch { /* ignore */ }
+  if (map?.getSource('green-areas')) map.getSource('green-areas').setData(EMPTY);
+  if (tool) { stopTool(); say(''); }
+  if (brush) stopBrush();
+}
+
+// ---------- car-free street tool ----------
+let btnCarFree;
+
+function startCarFreeTool() {
+  if (document.getElementById('btnTree')?.disabled) return;
+  document.getElementById('btnNav').click();
+  document.querySelectorAll('#ui button').forEach((b) => b.classList.remove('active'));
+  btnCarFree?.classList.add('active');
+  ensureGeo();
+  map.doubleClickZoom.disable();
+  map.getCanvas().style.cursor = 'crosshair';
+  tool = 'carfree';
+  drawing = [];
+  hover = null;
+  clearPreview();
+  say('🚲 <b>Car-free street</b>: hover a car road and click to turn it into a green pedestrian/bike street with trees along both edges.');
+  drawCarFreeState();
+}
+
+function drawCarFreeState() {
+  const items = window.__app?.carFreeLines || [];
+  const features = [];
+  for (const item of items) {
+    for (const coords of (item.lines || [])) {
+      features.push({
+        type: 'Feature',
+        properties: { name: item.name, lengthM: item.lengthM },
+        geometry: { type: 'LineString', coordinates: coords }
+      });
+    }
+  }
+  map.getSource('carfree-lines')?.setData({ type: 'FeatureCollection', features });
+}
+
+function applyCarFreeStreet(rd) {
+  if (!window.__app.carFreeLines) window.__app.carFreeLines = [];
+  const spots = computeStreetTreeSpots(rd.matched);
+  const plantedTrees = [];
+  for (const p of spots) {
+    const [lng, lat] = toLL(p);
+    const obj = app.addObject('tree', lng, lat);
+    plantedTrees.push({ obj, lng, lat });
+  }
+  growIn(plantedTrees.map((t) => t.obj));
+
+  const carFreeItem = {
+    id: 'cf_' + Date.now() + '_' + Math.floor(Math.random() * 1000),
+    name: rd.name || 'Car-free street',
+    lengthM: rd.totalLen,
+    lines: rd.matched.map((r) => r.coords),
+    trees: plantedTrees.map((t) => [t.lng, t.lat])
+  };
+  window.__app.carFreeLines.push(carFreeItem);
+
+  if (!window.__app.history) window.__app.history = [];
+  window.__app.history.push({
+    kind: 'carfree',
+    item: carFreeItem,
+    trees: plantedTrees
+  });
+
+  drawCarFreeState();
+  clearPreview();
+  map.getSource('carfree-hover')?.setData(EMPTY);
+  app.updateCount();
+  app.saveSession();
+
+  floatText(rd.primary.m[0], `🚲 ${rd.name || 'Street'} car-free · +${plantedTrees.length} trees · ${rd.totalLen} m`);
+  say(`🚲 <b>Car-free street</b>: ${rd.name || 'Street'} (${rd.totalLen} m, ${plantedTrees.length} trees planted). ` +
+    '<button id="pl-undo-carfree">Undo</button><button id="pl-done">Done</button>');
+  document.getElementById('pl-undo-carfree').onclick = () => undoCarFree(carFreeItem);
+  document.getElementById('pl-done').onclick = () => { stopTool(); say(''); };
+}
+
+function undoCarFree(targetItem) {
+  const list = window.__app?.carFreeLines;
+  if (!list || !list.length) return;
+  const item = targetItem || list.pop();
+  if (targetItem) {
+    const idx = list.indexOf(targetItem);
+    if (idx >= 0) list.splice(idx, 1);
+  }
+  if (item && item.trees) {
+    for (const pt of item.trees) {
+      const idx = app.placed.findIndex((p) => p.type === 'tree' && distM(toM([p.lng, p.lat]), toM(pt)) < 2);
+      if (idx >= 0) {
+        app.scene.remove(app.placed[idx].obj);
+        app.placed.splice(idx, 1);
+      }
+    }
+  }
+  drawCarFreeState();
+  clearPreview();
+  map.getSource('carfree-hover')?.setData(EMPTY);
+  app.updateCount();
+  app.saveSession();
+  if (tool === 'carfree') {
+    say('🚲 <b>Car-free street</b>: hover a car road and click to turn it into a green pedestrian/bike street with trees.');
+  } else {
+    say(list.length ? '<button id="pl-undo-carfree">Undo previous car-free street</button>' : '');
+    document.getElementById('pl-undo-carfree')?.addEventListener('click', () => undoCarFree());
+  }
 }
 
 // ---------- tree brush: hold the mouse down and paint trees ----------
@@ -820,6 +1189,31 @@ function onMove(ev) {
     return setTip(brush.painting ? `+${trees(brush.stroke.length)}` : 'Hold the mouse down to paint trees', true, ev.point);
   }
   if (tool && !pending) {
+    if (tool === 'carfree') {
+      ensureGeo();
+      const rd = roadAt(cursorM);
+      if (!rd) {
+        clearPreview();
+        map.getSource('carfree-hover')?.setData(EMPTY);
+        return setTip('✗ Hover a car road to convert', false, ev.point);
+      }
+      const already = (window.__app?.carFreeLines || []).some((cf) =>
+        cf.name && rd.name ? cf.name === rd.name : cf.lines?.some((ln) => distM(ln[0], rd.primary.coords[0]) < 10)
+      );
+      if (already) {
+        clearPreview();
+        map.getSource('carfree-hover')?.setData(EMPTY);
+        return setTip(`✓ Already car-free: ${rd.name || 'street'}`, true, ev.point);
+      }
+      const features = rd.matched.map((r) => ({
+        type: 'Feature',
+        geometry: { type: 'LineString', coordinates: r.coords }
+      }));
+      map.getSource('carfree-hover')?.setData({ type: 'FeatureCollection', features });
+      const spots = computeStreetTreeSpots(rd.matched);
+      showPreview({ spots, houses: [] }, `cf_${rd.name || ''}_${rd.totalLen}`);
+      return setTip(`🚲 Make ${rd.name || 'street'} car-free (${rd.totalLen} m) · click to convert`, true, ev.point);
+    }
     ensureGeo();
     if (tool === 'draw' || ev.originalEvent?.shiftKey) {
       if (tool === 'wand') { hover = null; clearPreview(); }
@@ -851,6 +1245,20 @@ function onMove(ev) {
 function onClick(e) {
   if (!tool || pending) return;
   const p = toM([e.lngLat.lng, e.lngLat.lat]);
+  if (tool === 'carfree') {
+    ensureGeo();
+    const rd = roadAt(p);
+    if (!rd) return;
+    const already = (window.__app?.carFreeLines || []).some((cf) =>
+      cf.name && rd.name ? cf.name === rd.name : cf.lines?.some((ln) => distM(ln[0], rd.primary.coords[0]) < 10)
+    );
+    if (already) {
+      say(`🚲 <b>Car-free street</b>: ${rd.name || 'street'} is already car-free.`);
+      return;
+    }
+    applyCarFreeStreet(rd);
+    return;
+  }
   if (tool === 'wand' && e.originalEvent?.shiftKey) { setMode('draw'); }
   if (tool === 'draw') {
     if (drawing.length >= 3 && distM(p, drawing[0]) < 6) return finishDrawing();
@@ -869,11 +1277,22 @@ const CSS = `
 #pl-tip{position:fixed;z-index:5;pointer-events:none;display:none;padding:4px 8px;border-radius:6px;
  font:12px/1.3 system-ui,-apple-system,sans-serif;color:#fff;box-shadow:0 1px 4px rgba(0,0,0,.25);white-space:nowrap}
 #pl-tip.ok{background:rgba(46,125,50,.92)} #pl-tip.no{background:rgba(183,28,28,.92)}
-#pl-info{position:absolute;left:50%;top:56px;transform:translateX(-50%);z-index:3;display:none;max-width:min(680px,calc(100vw - 40px));
- padding:5px 10px;border-radius:999px;background:rgba(255,255,255,.92);backdrop-filter:blur(10px);-webkit-backdrop-filter:blur(10px);
+#pl-info{position:absolute;left:50%;top:56px;transform:translateX(-50%);z-index:3;display:none;
+ flex-wrap:wrap;align-items:center;justify-content:center;gap:3px 3px;
+ width:max-content;max-width:calc(100vw - 32px);box-sizing:border-box;text-align:center;
+ padding:4px 8px;border-radius:18px;background:rgba(255,255,255,.92);backdrop-filter:blur(10px);-webkit-backdrop-filter:blur(10px);
  border:1px solid rgba(15,23,42,.1);box-shadow:0 4px 16px rgba(15,23,42,.14);
- font:500 12px/1.4 system-ui,-apple-system,sans-serif;color:#1f2933;white-space:nowrap}
-#pl-info button{margin:0 0 0 5px;font:500 11.5px system-ui,sans-serif;border:1px solid rgba(15,23,42,.16);background:#fff;border-radius:999px;padding:2px 8px;cursor:pointer}
+ font:500 11.5px/1.35 system-ui,-apple-system,sans-serif;color:#1f2933;font-variant-numeric:tabular-nums}
+#pl-info .pl-grp{display:inline-flex;align-items:center;gap:2px;white-space:nowrap}
+#pl-info .pl-lbl{margin-left:1px;font-size:10.5px;color:#64748b}
+#pl-info .pl-num{display:inline-block;text-align:right;font-variant-numeric:tabular-nums}
+#pl-info .pl-num-dim{min-width:2ch}
+#pl-info .pl-num-fl{min-width:2ch}
+#pl-info .pl-num-rot{min-width:4ch}
+#pl-info button{margin:0;font:500 11px/1.2 system-ui,sans-serif;border:1px solid rgba(15,23,42,.16);background:#fff;border-radius:999px;padding:2px 6px;cursor:pointer;white-space:nowrap}
+#pl-info .pl-grp button{padding:1px 5px}
+#pl-info #bld-layout{min-width:115px;text-align:center}
+#pl-info #bld-roof{min-width:114px;text-align:center}
 #pl-info button:hover{background:rgba(15,23,42,.06)}
 #pl-info #pl-ok{background:#2e7d32;border-color:#2e7d32;color:#fff}
 .pl-float{position:fixed;z-index:6;pointer-events:none;transform:translate(-50%,-50%);padding:6px 12px;border-radius:14px;
@@ -896,30 +1315,49 @@ function init() {
   document.body.append(tip, info);
 
   brushBtn = Object.assign(document.createElement('button'), { id: 'btnTreeBrush', textContent: '🖌️ Tree brush',
-    title: 'Hold the mouse down and paint trees' });
+    title: 'Tree brush (5) — Hold the mouse down and paint trees' });
   document.getElementById('btnTree').after(brushBtn);
   brushBtn.addEventListener('click', () => (brush ? stopBrush() : startBrush()));
   btn = Object.assign(document.createElement('button'), { id: 'btnGreenArea', textContent: '🌳 Green area',
-    title: 'Turn a square, lawn or block green: buildings inside are demolished and trees planted' });
+    title: 'Green area (6) — Turn a square, lawn or block green: buildings inside are demolished and trees planted' });
   brushBtn.after(btn);
   btn.addEventListener('click', () => (tool ? (stopTool(), say('')) : startTool()));
-  // any other tool ends the green area tool / the brush
+
+  btnCarFree = Object.assign(document.createElement('button'), {
+    id: 'btnCarFree',
+    textContent: '🚲 Car-free street',
+    title: 'Car-free street (8) — Convert a car road into a green pedestrian and bike street with street trees along both edges'
+  });
+  const btnBld = document.getElementById('btnBuilding');
+  if (btnBld) btnBld.after(btnCarFree);
+  else document.getElementById('ui')?.appendChild(btnCarFree);
+  btnCarFree.addEventListener('click', () => (tool === 'carfree' ? (stopTool(), say('')) : startCarFreeTool()));
+
+  // any other tool ends the green area tool / the brush / carfree tool
   document.getElementById('ui')?.addEventListener('click', (e) => {
     const b = e.target.closest('button');
     if (!b) return;
-    if (b !== btn && tool) { stopTool(); }
+    if (b !== btn && b !== btnCarFree && tool) { stopTool(); }
     if (b !== brushBtn && brush) { stopBrush(); }
     setTimeout(() => {
       if (placeType() === 'building' && !tool && !brush) {
         updateBuildingPill();
         refreshGhostBuilding();
+      } else if ((activeTool() === 'btnSelect' || document.getElementById('btnSelect')?.classList.contains('active')) && !tool && !brush) {
+        updateSelectionPill(window.__app?.selected || null);
       } else if (!tool && !brush) {
         say('');
       }
     }, 10);
   });
+  window.addEventListener('selection-changed', (e) => updateSelectionPill(e.detail));
   const ui = document.getElementById('ui');
-  if (ui) new ResizeObserver(() => { info.style.top = `${ui.offsetTop + ui.offsetHeight + 8}px`; }).observe(ui);
+  if (ui) {
+    const ro = new ResizeObserver(syncLayout);
+    ro.observe(ui);
+    ro.observe(info);
+    window.addEventListener('resize', syncLayout);
+  }
 
   map.addSource('green-areas', { type: 'geojson', data: EMPTY });
   const colour = ['match', ['get', 'state'], 'bad', '#c62828', 'pending', '#f9a825', '#2e7d32'];
@@ -946,13 +1384,61 @@ function init() {
     paint: { 'fill-extrusion-color': '#e8e4dc', 'fill-extrusion-height': height, 'fill-extrusion-base': base, 'fill-extrusion-opacity': 0.9 } });
   map.addSource('brush-cursor', { type: 'geojson', data: EMPTY });
   map.addLayer({ id: 'brush-cursor', type: 'line', source: 'brush-cursor', paint: { 'line-color': '#2e7d32', 'line-width': 2.5 } });
+
+  map.addSource('carfree-hover', { type: 'geojson', data: EMPTY });
+  map.addLayer({
+    id: 'carfree-hover',
+    type: 'line',
+    source: 'carfree-hover',
+    paint: {
+      'line-color': '#2e7d32',
+      'line-width': ['interpolate', ['linear'], ['zoom'], 14, 8, 17, 16],
+      'line-opacity': 0.6,
+      'line-dasharray': [2, 1]
+    }
+  }, 'buildings-own');
+
+  map.addSource('carfree-lines', { type: 'geojson', data: EMPTY });
+  map.addLayer({
+    id: 'carfree-lines-casing',
+    type: 'line',
+    source: 'carfree-lines',
+    paint: {
+      'line-color': '#1b5e20',
+      'line-width': ['interpolate', ['linear'], ['zoom'], 14, 10, 17, 20],
+      'line-opacity': 0.85
+    }
+  }, 'buildings-own');
+
+  map.addLayer({
+    id: 'carfree-lines-fill',
+    type: 'line',
+    source: 'carfree-lines',
+    paint: {
+      'line-color': '#4caf50',
+      'line-width': ['interpolate', ['linear'], ['zoom'], 14, 7, 17, 15],
+      'line-opacity': 0.9
+    }
+  }, 'buildings-own');
+
+  map.addLayer({
+    id: 'carfree-lines-center',
+    type: 'line',
+    source: 'carfree-lines',
+    paint: {
+      'line-color': '#e8f5e9',
+      'line-width': 2,
+      'line-dasharray': [3, 2]
+    }
+  }, 'buildings-own');
+
   setupGhosts();
 
   loadAreas();
   // the map geometry changes as tiles load, the view moves or buildings are deleted
   map.on('sourcedata', (e) => { if (e.sourceId === 'openmaptiles' && e.isSourceLoaded) geoDirty = true; });
   map.on('moveend', () => { geoDirty = true; hover = null; });
-  window.addEventListener('scene-changed', () => { geoDirty = true; });
+  window.addEventListener('scene-changed', () => { geoDirty = true; drawCarFreeState(); });
   map.on('idle', () => { if (geoDirty) rebuildGeo(); });
   fetch('trees.json').then((r) => r.json()).then((rows) => {
     const g = new Grid();
@@ -960,6 +1446,7 @@ function init() {
     geo.trees = g;
   }).catch(() => {});
   drawState();
+  drawCarFreeState();
   if (placeType() === 'building') updateBuildingPill();
 
   // mouse feedback, at most once per frame
@@ -986,6 +1473,16 @@ function init() {
     if (e.metaKey || e.ctrlKey || e.altKey) return;
 
     if (placeType() === 'building' && !tool && !brush) {
+      if (e.key === 'c' || e.key === 'C') {
+        e.preventDefault();
+        cycleBuildingLayout();
+        return;
+      }
+      if (e.key === 'g' || e.key === 'G') {
+        e.preventDefault();
+        cycleRoofType();
+        return;
+      }
       if (e.key === 'r' || e.key === 'R') {
         e.preventDefault();
         adjustBuilding({ rot: e.shiftKey ? -15 : 15 });
@@ -1042,19 +1539,44 @@ function init() {
   // keep the area layers above the climate layer's colour overlay (it may be added after us)
   setInterval(() => {
     const original = document.querySelector('#comparison-card button[aria-pressed="true"]')?.textContent === 'Original';
-    for (const id of ['green-areas-fill', 'green-areas-line', 'green-areas-corners'])
+    for (const id of ['green-areas-fill', 'green-areas-line', 'green-areas-corners', 'carfree-lines-fill', 'carfree-lines-casing', 'carfree-lines-center', 'carfree-hover'])
       if (map.getLayer(id)) map.setLayoutProperty(id, 'visibility', original ? 'none' : 'visible');
     btn.disabled = brushBtn.disabled = !!document.getElementById('btnTree')?.disabled;
+    if (btnCarFree) btnCarFree.disabled = !!document.getElementById('btnTree')?.disabled;
     if (brushBtn.disabled && brush) stopBrush();
     const ids = map.getStyle().layers.map((l) => l.id);
     if (ids.includes('climate-overlay') && ids.indexOf('climate-overlay') > ids.indexOf('green-areas-fill'))
-      for (const id of ['green-areas-fill', 'green-areas-line', 'placement-ghost']) map.moveLayer(id, 'buildings-own');
+      for (const id of ['green-areas-fill', 'green-areas-line', 'placement-ghost', 'carfree-lines-fill', 'carfree-lines-casing', 'carfree-lines-center']) map.moveLayer(id, 'buildings-own');
   }, 250);
 }
 
 // Asked by index.html before placing a single tree or building. Shows the reason when refused.
 window.placement = {
-  spaceAt: (lngLat) => (ensureGeo(), spaceAt(toM(lngLat))), // for testing in the console
+  spaceAt: (lngLat) => (ensureGeo(), spaceAt(toM(Array.isArray(lngLat) ? lngLat : [lngLat.lng, lngLat.lat]))), // for testing in the console
+  check: (type, pt) => (ensureGeo(), check(type, Array.isArray(pt) ? pt : [pt.lng, pt.lat])),
+  roadAt: (lngLat) => (ensureGeo(), roadAt(toM(Array.isArray(lngLat) ? lngLat : [lngLat.lng, lngLat.lat]))),
+  convertRoadCarFree: (rdOrName) => {
+    ensureGeo();
+    let rd = typeof rdOrName === 'object' && rdOrName !== null ? rdOrName : null;
+    if (!rd && typeof rdOrName === 'string') {
+      for (const r of geo.roads.items) {
+        let name = null;
+        for (const pt of [r.m[Math.floor(r.m.length / 2)], r.m[0], r.m[r.m.length - 1]]) {
+          name = streetName(pt);
+          if (name) break;
+        }
+        if (name && name.toLowerCase().includes(rdOrName.toLowerCase())) {
+          rd = roadAt(r.m[0]);
+          break;
+        }
+      }
+    }
+    if (rd) applyCarFreeStreet(rd);
+    return rd;
+  },
+  undoCarFree,
+  resetAreas,
+  cycleBuildingLayout,
   allow(type, e) {
     if (!map) return true;
     const pt = [e.lngLat.lng, e.lngLat.lat];

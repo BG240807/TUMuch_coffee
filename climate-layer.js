@@ -5,8 +5,9 @@ const N = 120;                 // grid cells per side
 const HALF = 1600;             // metres from grid centre to edge (3.2 km × 3.2 km coverage)
 const CELL = (2 * HALF) / N;   // ~26.7 m cells
 const MLAT = 111320;           // metres per degree latitude
-const AUTO_T = 4;              // °C: in Auto mode, rain/snow starts by itself at or below this
-const SNOW_T = 1.5;            // °C: at or below this it falls as snow
+const SNOW_T = 1.5;            // °C: at or below this it falls as snow (rain/snow 50 % point, Jennings et al. 2018)
+const DRAIN_MMH = 25;          // mm/h the sewers carry away; only rain above this pools (DWD heavy-rain warning > 25 mm/h, DWA-A 118 design rain)
+const CLOUDBURST_MMH = 40;     // 🌧 button: ~30-year storm for Heilbronn (DWD KOSTRA-2020, 60 min)
 const CO2_REF_KG = 7500;       // rough yearly CO₂ per person (kg): CO₂ avoided is also shown as a % of this
 const clamp = (v, a, b) => Math.min(b, Math.max(a, v));
 const fmt = (v, d = 1) => (v > 0 ? '+' : '') + v.toFixed(d);
@@ -16,8 +17,8 @@ const SCEN = {
   live: { T: 12, rh: 65, pm: 8, pm10: 15, no2: 25, precip: 0 },
   heat: { T: 34, rh: 35, pm: 14, pm10: 24, no2: 30, precip: 0 },
   snow: { T: -2, rh: 88, pm: 14, pm10: 22, no2: 35, precip: 2.5 },
-  rain: { T: 11, rh: 92, pm: 6.3, pm10: 4.5, no2: 18, precip: 8, rainWashout: true },
-  carfree: { T: 12, rh: 65, pm: 6.8, pm10: 7.5, no2: 4.0, precip: 0, carfree: true }
+  rain: { T: 11, rh: 92, pm: 6.3, pm10: 4.5, no2: 18, precip: 40, rainWashout: true },
+  carfree: { T: 12, rh: 65, pm: 7.6, pm10: 14.3, no2: 12.5, precip: 0, carfree: true }
 };
 const KEY = { temp: 'T', pet: 'PET', pm: 'PM', rh: 'RH' };
 const STOPS = {
@@ -31,7 +32,7 @@ const MIN_DELTA = { T: 0.02, PET: 0.05, PM: 0.05, RH: 0.1 };
 const ROAD_W = { motorway: 1, trunk: 0.9, primary: 0.7, secondary: 0.5, tertiary: 0.35, minor: 0.12, service: 0.05 };
 
 let app, map, g, S, U, F, R, trees = [];
-let mode = 'temp', scen = 'live', deltaOnly = false;
+let mode = 'off', scen = 'live', deltaOnly = false;
 let wxMode = 'auto';           // rain / snow buttons: 'auto' | 'rain' | 'snow' | 'off'
 let stormH = 6;                // storm duration in hours (drives how much snow / water builds up)
 let W = { Snow: null, Water: null, maxS: 0, maxW: 0, avgS: 0, avgW: 0 };
@@ -216,11 +217,17 @@ function buildUser() {
     removed: new Float32Array(M),
     canopy: new Float32Array(M),
     park: new Float32Array(M),
+    greenRoof: new Float32Array(M),
+    solarRoof: new Float32Array(M),
     nTrees: 0,
     nBuild: 0,
     nRemoved: 0,
     nParks: 0,
-    totalBuildArea: 0
+    totalBuildArea: 0,
+    greenRoofArea: 0,
+    solarRoofArea: 0,
+    carFree: new Float32Array(M),
+    carFreeM: 0
   };
   for (const p of app.placed) {
     const k = idx(p.lng, p.lat);
@@ -230,11 +237,40 @@ function buildUser() {
     } else if (p.type === 'building') {
       U.nBuild++;
       const bArea = (p.obj && p.obj.userData && p.obj.userData.area) || 140;
+      const roofType = (p.obj && p.obj.userData && p.obj.userData.roofType) || 'standard';
       U.totalBuildArea += bArea;
-      if (k >= 0) U.built[k] += bArea;
+      if (roofType === 'green') {
+        U.greenRoofArea += bArea;
+        if (k >= 0) U.greenRoof[k] += bArea;
+      } else if (roofType === 'solar') {
+        U.solarRoofArea += bArea;
+        if (k >= 0) {
+          U.solarRoof[k] += bArea;
+          U.built[k] += bArea;
+        }
+      } else {
+        if (k >= 0) U.built[k] += bArea;
+      }
     } else if (p.type === 'park') {
       U.nParks++;
       if (k >= 0) U.park[k] += (p.obj?.userData?.area || 400);
+    }
+  }
+
+  // Retrofitted map buildings
+  if (app.retrofitted && S.bList) {
+    const retroEntries = app.retrofitted instanceof Map ? app.retrofitted.entries() : Object.entries(app.retrofitted);
+    const retroMap = new Map(retroEntries);
+    for (const e of S.bList) {
+      if (app.isDeleted(e.b)) continue;
+      const type = retroMap.get(e.b.key) || retroMap.get(String(e.b.props?.bid)) || e.b.props?.retrofit;
+      if (type === 'green') {
+        U.greenRoofArea += e.a;
+        if (e.k >= 0) U.greenRoof[e.k] += e.a;
+      } else if (type === 'solar') {
+        U.solarRoofArea += e.a;
+        if (e.k >= 0) U.solarRoof[e.k] += e.a;
+      }
     }
   }
 
@@ -258,6 +294,27 @@ function buildUser() {
   if (app.deleted && app.deleted.length) {
     for (const e of S.bList) if (app.isDeleted(e.b)) { U.removed[e.k] += e.a; U.nRemoved++; }
   }
+
+  // Car-free pedestrian/bike streets
+  const carFreeLines = window.__app?.carFreeLines || [];
+  for (const cf of carFreeLines) {
+    U.carFreeM += cf.lengthM || 0;
+    const lines = cf.lines || (cf.coordinates ? [cf.coordinates] : []);
+    for (const seg of lines) {
+      const pts = Array.isArray(seg) ? seg : (seg.a && seg.b ? [seg.a, seg.b] : []);
+      for (let i = 0; i < pts.length - 1; i++) {
+        const a = pts[i], b = pts[i + 1];
+        const len = Math.hypot((b[0] - a[0]) * g.mLng, (b[1] - a[1]) * MLAT);
+        const steps = Math.max(1, Math.ceil(len / 12));
+        for (let s = 0; s <= steps; s++) {
+          const t = s / steps;
+          const k = idx(a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t);
+          if (k >= 0) U.carFree[k] = 1.0;
+        }
+      }
+    }
+  }
+  U.carFreeB = blur(U.carFree, 1, 2);
 }
 
 /* ---------------- the model ---------------- */
@@ -267,9 +324,9 @@ function field(sc, withUser) {
   for (let k = 0; k < M; k++) {
     let b = S.built[k], c = S.canopy[k];
     if (withUser) {
-      b = Math.max(0, b + U.built[k] - U.removed[k] * 1.4);
+      b = Math.max(0, b + U.built[k] - U.removed[k] * 1.4 - U.greenRoof[k] * 0.7);
       c += U.canopy[k] * 1.8;
-      userVeg[k] = clamp((U.canopy[k] * 2.2 + U.removed[k] * 0.8 + (U.park[k] || 0) * area * 0.85) / area, 0, 1.2);
+      userVeg[k] = clamp((U.canopy[k] * 2.2 + U.removed[k] * 0.8 + (U.park[k] || 0) * area * 0.85 + U.greenRoof[k] * 0.7) / area, 0, 1.2);
       userBuilt[k] = clamp((U.built[k] * 1.6) / area, 0, 1.2);
     }
     sealed[k] = clamp((b / area) * 1.8, 0, 1);
@@ -278,36 +335,41 @@ function field(sc, withUser) {
   const sealedB = blur(sealed, 1, 2), canopyB = blur(canopy, 1, 2);
   const uVegB = withUser ? blur(userVeg, 2, 2) : userVeg;
   const uBuiltB = withUser ? blur(userBuilt, 2, 2) : userBuilt;
+  const uCarFreeB = withUser ? U.carFreeB : new Float32Array(M);
 
   const T = new Float32Array(M), PET = new Float32Array(M), PM = new Float32Array(M), RH = new Float32Array(M), Runoff = new Float32Array(M);
   const Veg = new Float32Array(M);
 
   const isCarFree = !!sc.carfree;
-  const trafFactor = isCarFree ? 0.16 : 1.0;
-  const basePm = isCarFree ? (sc.pm * 0.85) : sc.pm;
-  const rainWashout = (sc.precip > 0) ? clamp(1 - 0.05 * sc.precip, 0.65, 1.0) : 1.0;
+  const trafFactor = isCarFree ? 0.5 : 1.0;   // NO₂ −50 % on a car-free day (Brussels, effects.json)
+  const basePm = sc.pm;   // car-free day PM is already lowered in SCEN.carfree (−5 %)
+  const rainWashout = (sc.precip > 0) ? clamp(1 - 0.05 * sc.precip, 0.79, 1.0) : 1.0;   // at most −21 % PM2.5 after rain
 
   for (let k = 0; k < M; k++) {
     const baseVeg = clamp(canopyB[k] + 0.5 * S.greenB[k], 0, 1);
+    const cf = clamp(uCarFreeB[k], 0, 1);
     Veg[k] = clamp(baseVeg + 0.6 * uVegB[k], 0, 1);
 
     // --- 1. Ambient Air Temp (Ta) ---
     // Single tree: cools local cell by -0.2 to -0.6 °C with log diminishing returns (Math.log1p)
     // +10% canopy cools neighborhood by -0.8 °C, capped at -1.5 °C for +30% canopy
     // Added concrete buildings warm local Ta up to +1.8 °C
+    // Car-free pedestrian street eliminates asphalt heat buildup (-1.2 °C)
     // Thermal floor: cannot cool below rural background (sc.T)
     const baseTreeCool = -0.983 * Math.log1p(baseVeg * 12.0);
     const userTreeCool = withUser ? -Math.min(1.5, 0.983 * Math.log1p(uVegB[k] * 12.0)) : 0;
     const userBuildWarm = withUser ? Math.min(1.8, 1.8 * uBuiltB[k]) : 0;
+    const userRoadCool = withUser ? -1.2 * cf : 0;
 
-    const rawT = sc.T + 4.2 * sealedB[k] + baseTreeCool + userTreeCool + userBuildWarm
-      - 1.8 * S.waterB[k] - 0.0065 * (S.elev[k] - S.meanElev);
+    const rawT = sc.T + 4.2 * sealedB[k] + baseTreeCool + userTreeCool + userBuildWarm + userRoadCool
+      - 1.0 * S.waterB[k] - 0.0065 * (S.elev[k] - S.meanElev);
 
     T[k] = Math.max(sc.T - Math.max(0, 0.0065 * (S.elev[k] - S.meanElev)), rawT);
 
     // --- 2. Perceived Temperature (PET / Shade Comfort) ---
     // Trees/parks reduce local PET by -4.0 to -11.0 °C (dense shade + evapotranspiration)
     // Unshaded concrete/added buildings raise PET by +3.5 to +6.0 °C
+    // Pedestrianization & street shading adds -2.5 °C PET comfort
     const solarGain = Math.max(0, (sc.T - 8) * 0.28) * (1 + 1.2 * sealedB[k]);
     const baseShade = -(4.0 * Math.min(1.0, baseVeg * 2.0) + 7.0 * (baseVeg * baseVeg));
 
@@ -317,21 +379,25 @@ function field(sc, withUser) {
       const dPetVeg = -(4.0 * clamp(uShade * 2.0, 0, 1) + 7.0 * uShade);
       const uConcrete = clamp(userBuilt[k] * 2.0 + uBuiltB[k], 0, 1);
       const dPetBuilt = +(3.5 * clamp(uConcrete * 1.5, 0, 1) + 2.5 * uConcrete);
-      userPetDelta = dPetVeg + dPetBuilt;
+      userPetDelta = dPetVeg + dPetBuilt - 2.5 * cf;
     }
     PET[k] = T[k] + solarGain + baseShade + userPetDelta;
 
-    // --- 3. Particulate Matter (PM2.5) ---
-    const trafProxy = 0.9 * S.trafB[k] * trafFactor;
-    const vegFilter = clamp(0.4 * baseVeg + 0.45 * uVegB[k], 0, 0.75);
+    // --- 3. Particulate Matter (PM2.5) & Traffic Pollution ---
+    // Car-free street: NO2 falls ~50 % (Brussels), but traffic PM only 0–7 % (German LEZ, Cyrys et al. 2014)
+    const localTrafFactor = 1.0 - 0.07 * cf;
+    const trafProxy = 0.9 * S.trafB[k] * trafFactor * localTrafFactor;
+    const vegFilter = clamp(0.06 * baseVeg + 0.06 * uVegB[k], 0, 0.10);   // vegetation removes only a few % of PM
     PM[k] = Math.max(0.2 * basePm, basePm * (0.75 + trafProxy + 0.35 * sealedB[k] + 0.3 * uBuiltB[k]) * (1 - vegFilter) * rainWashout);
 
     // --- 4. Relative Humidity (RH) ---
-    RH[k] = clamp(sc.rh - 2.0 * (T[k] - sc.T) + 6.0 * baseVeg + 5.0 * uVegB[k] + 8.0 * S.waterB[k], 15, 100);
+    RH[k] = clamp(sc.rh - 2.0 * (T[k] - sc.T) + 6.0 * baseVeg + 5.0 * uVegB[k] + 8.0 * S.waterB[k] + 2.0 * cf, 15, 100);
 
     // --- 5. Stormwater Runoff Coefficient ---
-    const cBase = clamp(0.95 * sealedB[k] + 0.20 * baseVeg + 0.50 * (1 - sealedB[k] - baseVeg), 0.15, 0.95);
-    Runoff[k] = withUser ? clamp(cBase - 0.42 * uVegB[k] + 0.48 * uBuiltB[k], 0.15, 0.95) : cBase;
+    const cBase = clamp(0.90 * sealedB[k] + 0.10 * baseVeg + 0.50 * (1 - sealedB[k] - baseVeg), 0.05, 0.95);   // DWA-A 138: sealed 0.90, lawns/parks 0.10
+    const dRunoffGreen = -0.30 * clamp(U.greenRoof[k] / area, 0, 1);
+    const dRunoffCarFree = 0;   // a car-free street is still asphalt
+    Runoff[k] = withUser ? clamp(cBase - 0.42 * uVegB[k] + 0.48 * uBuiltB[k] + dRunoffGreen + dRunoffCarFree, 0.05, 0.95) : cBase;
   }
 
   return { T, PET, PM, RH, Runoff, Sealed: sealedB, Veg };
@@ -350,12 +416,12 @@ function computeRanges() {
 
 /* ---------------- precipitation: rain / snow rules + accumulated levels ---------------- */
 // Water-equivalent precipitation rate (mm/h) for a cell.
-//  auto : real rain (live / month data) at any temperature, plus it starts by itself at <= AUTO_T
+//  auto : only real precipitation (live / month data); snow or rain depends on the temperature
 //  rain / snow : forced by the buttons;  off : nothing
 function precipRate(T, p0) {
   if (wxMode === 'off') return 0;
-  if (wxMode === 'rain' || wxMode === 'snow') return Math.max(p0, 3);
-  if (T <= AUTO_T) return clamp(Math.max(p0, 1 + (AUTO_T - T) * 0.3), 0, 8);
+  if (wxMode === 'rain') return Math.max(p0, CLOUDBURST_MMH);
+  if (wxMode === 'snow') return Math.max(p0, 3);
   return p0;
 }
 // 0 = dry, 1 = rain, 2 = snow
@@ -384,7 +450,8 @@ function computeWeather() {
     if (kind === 0) continue;
     if (kind === 2) {
       // colder = fluffier, deeper pile; trees and busy (warm, salted) roads keep less snow
-      const cold = 0.35 + 0.65 * clamp((SNOW_T - T) / 6, 0, 1);
+      // snow-to-water ratio: ~7:1 wet snow near +1 °C, 10:1 at -1 °C, ~20:1 dry snow at -11 °C (Roebber et al. 2003)
+      const cold = clamp(1 + (-1 - T) * 0.1, 0.7, 2);
       const shelter = clamp(1 - 0.25 * F.scn.Veg[k] - 0.35 * clamp(S.trafB[k] * (isCarFree ? 0.16 : 1), 0, 1), 0.4, 1);
       const d = Math.min(60, rate * stormH * cold * shelter);
       Snow[k] = d;
@@ -392,7 +459,10 @@ function computeWeather() {
     } else {
       // rain runs off sealed ground and pools in low spots (valley bottoms, next to water)
       const low = clamp((S.elevB[k] - S.elev[k]) / 4 + 0.3 * S.waterB[k], 0, 1);
-      const d = Math.min(40, rate * stormH * F.scn.Runoff[k] * (0.03 + 0.3 * low));
+      // only rain the sewers can't take pools; hollows collect water from around them. Scaled so a 1 h
+      // cloudburst gives ~10-30 cm in hollows (LUBW heavy-rain hazard classes); flat streets stay dry
+      const excess = Math.max(0, rate - DRAIN_MMH);
+      const d = Math.min(100, excess * stormH * F.scn.Runoff[k] * (0.1 + 15 * low) / 10);   // mm -> cm
       Water[k] = d;
       if (d > 0.3) { sumW += d; nW++; if (d > maxW) maxW = d; }
     }
@@ -417,7 +487,7 @@ function ensureLayer(url = TRANSPARENT) {
   map.addSource('climate-img', { type: 'image', url, coordinates: coords() });
   map.addLayer({
     id: 'climate-overlay', type: 'raster', source: 'climate-img',
-    paint: { 'raster-opacity': 0.62, 'raster-fade-duration': 0, 'raster-resampling': 'linear' }
+    paint: { 'raster-opacity': 0.45, 'raster-fade-duration': 0, 'raster-resampling': 'linear' }
   }, map.getLayer('buildings-own') ? 'buildings-own' : undefined);
   return false;
 }
@@ -550,7 +620,7 @@ function updateAccText() {
   } else if (wxMode === 'off') {
     el.innerHTML = '<div style="color:#94a3b8">Rain / snow is switched off.</div>';
   } else {
-    el.innerHTML = `<div style="color:#94a3b8">Dry. In Auto, rain / snow appears when it really rains or at ≤ ${AUTO_T} °C.</div>`;
+    el.innerHTML = `<div style="color:#94a3b8">Dry. In Auto, rain / snow appears only when the weather data has some.</div>`;
   }
 }
 
@@ -630,14 +700,14 @@ function updateEdits() {
     dRunoffPct = ((sumScnRunoff - sumBaseRunoff) / sumBaseRunoff) * 100;
   }
 
-  const solarKwhYr = Math.round((U.totalBuildArea || 0) * 175);
-  const solarCo2SavedKgYr = solarKwhYr * 0.35;
-  const treeCo2SavedKgYr = (U.nTrees || 0) * 25 + (U.nParks || 0) * 1500;
+  const solarKwhYr = Math.round((U.solarRoofArea || 0) * 90);   // 150 kWh/m² panel × 60 % usable roof (effects.json)
+  const solarCo2SavedKgYr = solarKwhYr * 0.363; // German grid factor 0.363 kg CO2/kWh (UBA 2024)
+  const treeCo2SavedKgYr = (U.nTrees || 0) * 25 + (U.nParks || 0) * 1500;   // estimate: ~25 kg per mature tree (rule of thumb)
   const co2SavedKgYr = Math.round(solarCo2SavedKgYr + treeCo2SavedKgYr);
   const co2Pct = (co2SavedKgYr / CO2_REF_KG) * 100;   // share of one person's yearly footprint
 
   const counts = { tree: U.nTrees, park: U.nParks, building: U.nBuild };
-  const hasInterventions = (U.nTrees > 0 || U.nBuild > 0 || U.nRemoved > 0 || U.nParks > 0);
+  const hasInterventions = (U.nTrees > 0 || U.nBuild > 0 || U.nRemoved > 0 || U.nParks > 0 || U.greenRoofArea > 0 || U.solarRoofArea > 0 || (U.carFreeM || 0) > 0);
   const active = !showOriginal && (hasInterventions || n > 0);
 
   const avgT = n ? dT / n : 0;
@@ -657,8 +727,11 @@ function updateEdits() {
       dRH: Number(avgRH.toFixed(1)),
       dRHpct: Number(rhPct.toFixed(1)),
       dRunoffPct: Number(dRunoffPct.toFixed(1)),
+      greenRoofM2: Math.round(U.greenRoofArea),
+      solarRoofM2: Math.round(U.solarRoofArea),
       solarKwhYr,
       co2SavedKgYr,
+      carFreeLengthM: Math.round(U.carFreeM || 0),
       co2Pct: Number(co2Pct.toFixed(2)),
       counts,
       areaM2: Math.round(n * CELL * CELL),
@@ -670,7 +743,12 @@ function updateEdits() {
   }));
 
   const parkText = U.nParks > 0 ? `, +${U.nParks} park` : '';
-  const head = `<div><b>Your edits</b><span>+${U.nTrees} trees${parkText}, +${U.nBuild} bldg, −${U.nRemoved} bldg</span></div>`;
+  const roofParts = [];
+  if (U.greenRoofArea > 0) roofParts.push(`+${Math.round(U.greenRoofArea)} m² green roof`);
+  if (U.solarRoofArea > 0) roofParts.push(`+${Math.round(U.solarRoofArea)} m² solar`);
+  const roofText = roofParts.length ? `, ${roofParts.join(', ')}` : '';
+  const carFreeText = (U.carFreeM && U.carFreeM > 0) ? `, +${Math.round(U.carFreeM)} m car-free` : '';
+  const head = `<div><b>Your edits</b><span>+${U.nTrees} trees${parkText}, +${U.nBuild} bldg, −${U.nRemoved} bldg${roofText}${carFreeText}</span></div>`;
 
   if (showOriginal) {
     el.innerHTML = head + '<div style="color:#8a969c">Viewing the original city: edits hidden.</div>';
@@ -693,8 +771,10 @@ function updateEdits() {
     `<div><span>PM2.5</span><b>${fmt(avgPM)} % <small>(peak ${fmt(pPM * 100)})</small></b></div>` +
     `<div><span>Humidity</span><b>${fmt(avgRH)} pts <small>(${fmt(rhPct)} %)</small></b></div>` +
     (solarKwhYr > 0 ? `<div><span>Rooftop solar</span><b>${solarKwhYr.toLocaleString()} kWh/yr</b></div>` : '') +
+    (U.carFreeM > 0 ? `<div><span>Car-free street</span><b>${Math.round(U.carFreeM).toLocaleString()} m</b></div>` : '') +
     (co2Val ? `<div><span>CO₂ avoided</span><b>${co2Val} <small>(${co2Pct.toFixed(1)} %)</small></b></div>` +
-      `<div style="color:#94a3b8;font-size:10.5px">CO₂ % = share of one person's yearly footprint (≈ ${(CO2_REF_KG / 1000).toFixed(1)} t).</div>` : '');
+      `<div style="color:#94a3b8;font-size:10.5px">CO₂ % = share of one person's yearly footprint (≈ ${(CO2_REF_KG / 1000).toFixed(1)} t).</div>` : '') +
+    `<div style="color:#94a3b8;font-size:10.5px">Estimates: simple model using published effect sizes (see ⓘ).</div>`;
 }
 
 /* ---------------- refresh pipeline ---------------- */
@@ -781,9 +861,9 @@ async function loadLive() {
 
     SCEN.carfree.T = SCEN.live.T;
     SCEN.carfree.rh = SCEN.live.rh;
-    SCEN.carfree.pm = SCEN.live.pm * 0.85; // -15% PM2.5
-    SCEN.carfree.pm10 = (SCEN.live.pm10 || 15) * 0.50; // -50% PM10
-    SCEN.carfree.no2 = (SCEN.live.no2 || 25) * 0.16; // -84% NO2
+    SCEN.carfree.pm = SCEN.live.pm * 0.95; // -5% PM2.5 (German LEZ 0-7%)
+    SCEN.carfree.pm10 = (SCEN.live.pm10 || 15) * 0.95; // -5% PM10 (German LEZ 0-7%)
+    SCEN.carfree.no2 = (SCEN.live.no2 || 25) * 0.50; // -50% NO2 (Brussels car-free day)
 
     const opt = document.querySelector('#cl-scen option[value="live"]');
     if (opt) opt.textContent = `Live now (${SCEN.live.T.toFixed(1)} °C)`;
@@ -856,14 +936,14 @@ function buildUI() {
     <div class="cl-head"><b>Climate layers</b><button id="cl-min" title="Collapse">–</button></div>
     <div id="cl-body">
       <div class="cl-modes">
-        <button data-m="off">Off</button><button data-m="temp" class="on">🌡 Air Temp</button>
+        <button data-m="off" class="on">Off</button><button data-m="temp">🌡 Air Temp</button>
         <button data-m="pet">☀️ Feel (PET)</button><button data-m="pm">🏭 Pollution</button>
         <button data-m="rh">💧 Humidity</button>
       </div>
       <label class="cl-row">Scenario
         <select id="cl-scen">
           <option value="live">Live now</option><option value="heat">Heatwave 34 °C</option>
-          <option value="snow">Winter storm −2 °C</option><option value="rain">Heavy rain 11 °C</option>
+          <option value="snow">Winter storm −2 °C</option><option value="rain">Cloudburst 40 mm/h</option>
           <option value="carfree">Car-free day</option>
         </select>
       </label>
@@ -871,12 +951,12 @@ function buildUI() {
       <label class="cl-chk"><input type="checkbox" id="cl-delta"> Show only the change from my edits</label>
       <div class="cl-row" style="margin:8px 0 4px">Rain / snow</div>
       <div class="cl-wx">
-        <button data-w="auto" class="on" title="Follows real rain and the temperature (≤ ${AUTO_T} °C)">Auto</button>
-        <button data-w="rain" title="Show rain everywhere">🌧</button>
+        <button data-w="auto" class="on" title="Follows the real rain data; snow when it is cold">Auto</button>
+        <button data-w="rain" title="Cloudburst: 40 mm/h, about a 30-year storm">🌧</button>
         <button data-w="snow" title="Show snow everywhere">❄</button>
         <button data-w="off" title="Hide rain and snow">Off</button>
       </div>
-      <label class="cl-row">Storm duration: <b id="cl-hv">${stormH} h</b>
+      <label class="cl-row">Hours of rain / snow: <b id="cl-hv">${stormH} h</b>
         <input type="range" id="cl-hours" min="1" max="24" value="${stormH}">
       </label>
       <div id="cl-bar"></div>
